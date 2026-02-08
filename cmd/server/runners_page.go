@@ -169,18 +169,23 @@ const runnersHTML = `<!DOCTYPE html>
         let currentRunner = null;
 
         async function init() {
-            // Load installations (orgs)
-            const res = await fetch('/api/v1/installations');
-            const data = await res.json();
-            orgs = (data.installations || []).map(i => i.owner_login);
+            try {
+                // Load installations (orgs)
+                const res = await fetch('/api/v1/installations');
+                const data = await res.json();
+                orgs = (data.installations || []).map(i => i.owner_login);
 
-            renderOrgList();
+                renderOrgList();
 
-            // Restore last selection
-            if (currentOrg && orgs.includes(currentOrg)) {
-                await selectOrg(currentOrg);
-            } else if (orgs.length > 0) {
-                await selectOrg(orgs[0]);
+                // Restore last selection
+                if (currentOrg && orgs.includes(currentOrg)) {
+                    await selectOrg(currentOrg);
+                } else if (orgs.length > 0) {
+                    await selectOrg(orgs[0]);
+                }
+            } catch (err) {
+                console.error('Init error:', err);
+                document.getElementById('runner-list').innerHTML = '<div class="empty">Failed to initialize: ' + err.message + '</div>';
             }
         }
 

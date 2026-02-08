@@ -142,21 +142,26 @@ const dashboardHTML = `<!DOCTYPE html>
         let currentRepo = localStorage.getItem('mq_repo') || '';
 
         async function init() {
-            // Load installations (orgs)
-            const res = await fetch('/api/v1/installations');
-            const data = await res.json();
-            orgs = (data.installations || []).map(i => i.owner_login);
+            try {
+                // Load installations (orgs)
+                const res = await fetch('/api/v1/installations');
+                const data = await res.json();
+                orgs = (data.installations || []).map(i => i.owner_login);
 
-            renderSidebar();
+                renderSidebar();
 
-            // Restore last selection
-            if (currentOrg && orgs.includes(currentOrg)) {
-                await selectOrg(currentOrg, false);
-                if (currentRepo) {
-                    selectRepo(currentRepo);
+                // Restore last selection
+                if (currentOrg && orgs.includes(currentOrg)) {
+                    await selectOrg(currentOrg, false);
+                    if (currentRepo) {
+                        selectRepo(currentRepo);
+                    }
+                } else if (orgs.length > 0) {
+                    await selectOrg(orgs[0], true);
                 }
-            } else if (orgs.length > 0) {
-                await selectOrg(orgs[0], true);
+            } catch (err) {
+                console.error('Init error:', err);
+                showError('Failed to initialize: ' + err.message);
             }
         }
 
