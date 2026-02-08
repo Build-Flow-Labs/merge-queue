@@ -1,0 +1,23 @@
+{
+  "name": "Build Flow Merge Queue",
+  "url": "https://github.com/Build-Flow-Labs/merge-queue",
+  "hook_attributes": {
+    "url": "https://merge-queue.buildflow.dev/webhooks/github"
+  },
+  "redirect_url": "https://merge-queue.buildflow.dev/callback",
+  "public": false,
+  "default_permissions": {
+    "contents": "write",
+    "pull_requests": "write",
+    "statuses": "read",
+    "checks": "read",
+    "metadata": "read"
+  },
+  "default_events": [
+    "pull_request",
+    "issue_comment",
+    "status",
+    "check_run",
+    "check_suite"
+  ]
+}

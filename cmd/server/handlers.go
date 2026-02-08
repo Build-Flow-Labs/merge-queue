@@ -137,10 +137,17 @@ func (h *Handlers) handlePullRequest(w http.ResponseWriter, body []byte) {
 		return
 	}
 
-	// Get settings to check trigger label
+	// Get settings
 	settings := h.getSettings(installID, owner, repo)
 
-	// Check for trigger label on labeled action
+	// Auto-queue on PR opened or ready_for_review
+	if evt.Action == "opened" || evt.Action == "ready_for_review" {
+		log.Printf("Auto-queuing PR #%d in %s/%s (action: %s)", evt.Number, owner, repo, evt.Action)
+		h.addToQueue(installID, owner, repo, evt.Number, evt.PullRequest.Title,
+			evt.PullRequest.Head.Ref, evt.PullRequest.Base.Ref, evt.PullRequest.User.Login, evt.Sender.Login)
+	}
+
+	// Also queue on label (fallback)
 	if evt.Action == "labeled" {
 		for _, label := range evt.PullRequest.Labels {
 			if label.Name == settings.TriggerLabel {
