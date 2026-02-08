@@ -1,3 +1,5 @@
 .env
 private-key.pem
 *.pem
+merge-queue
+scripts/set-secrets.sh

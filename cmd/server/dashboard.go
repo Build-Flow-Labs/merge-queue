@@ -91,6 +91,7 @@ const dashboardHTML = `<!DOCTYPE html>
         <div class="nav-section">
             <a href="/" class="nav-item active">🚦 Merge Queue</a>
             <a href="/runners" class="nav-item">🖥️ Runners</a>
+            <a href="/workflows" class="nav-item">⚡ Workflows</a>
         </div>
         <div class="org-section">
             <div class="org-header">Organizations</div>

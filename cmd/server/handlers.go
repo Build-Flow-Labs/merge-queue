@@ -732,6 +732,52 @@ func (h *Handlers) GetJobLogs(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(logs))
 }
 
+// ListWorkflowRuns lists recent workflow runs across all repos
+func (h *Handlers) ListWorkflowRuns(w http.ResponseWriter, r *http.Request) {
+	owner := r.URL.Query().Get("owner")
+	if owner == "" {
+		http.Error(w, "owner parameter required", http.StatusBadRequest)
+		return
+	}
+
+	// Get installation for this owner
+	var ghInstallID int64
+	err := h.db.QueryRow(`SELECT github_installation_id FROM installations WHERE owner_login = $1`, owner).Scan(&ghInstallID)
+	if err != nil {
+		http.Error(w, "installation not found", http.StatusNotFound)
+		return
+	}
+
+	// Create GitHub client
+	ghClient, err := github.NewInstallationClient(h.ghConfig, ghInstallID)
+	if err != nil {
+		http.Error(w, "failed to create GitHub client", http.StatusInternalServerError)
+		return
+	}
+
+	// Get repos
+	var repos []string
+	reposRes, _, err := ghClient.Apps.ListRepos(r.Context(), &gh.ListOptions{PerPage: 50})
+	if err == nil {
+		for _, repo := range reposRes.Repositories {
+			repos = append(repos, repo.GetName())
+		}
+	}
+
+	// Get workflow runs
+	runs, err := github.ListOrgWorkflowRuns(r.Context(), ghClient, owner, repos, 50)
+	if err != nil {
+		http.Error(w, "failed to list workflow runs: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"runs":  runs,
+		"count": len(runs),
+	})
+}
+
 // ListRepos lists repositories for an organization from GitHub
 func (h *Handlers) ListRepos(w http.ResponseWriter, r *http.Request) {
 	owner := r.URL.Query().Get("owner")

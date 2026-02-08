@@ -97,6 +97,7 @@ const runnersHTML = `<!DOCTYPE html>
         <div class="nav-section">
             <a href="/" class="nav-item">🚦 Merge Queue</a>
             <a href="/runners" class="nav-item active">🖥️ Runners</a>
+            <a href="/workflows" class="nav-item">⚡ Workflows</a>
         </div>
         <div class="org-section">
             <div class="org-header">Organizations</div>
@@ -208,6 +209,15 @@ const runnersHTML = `<!DOCTYPE html>
 
             try {
                 const res = await fetch('/api/v1/runners?owner=' + currentOrg);
+                if (!res.ok) {
+                    const text = await res.text();
+                    if (text.includes('403') || text.includes('not accessible')) {
+                        document.getElementById('runner-list').innerHTML = '<div class="empty" style="font-size: 12px;">GitHub App needs<br><b>organization_self_hosted_runners: read</b><br>permission</div>';
+                    } else {
+                        document.getElementById('runner-list').innerHTML = '<div class="empty">Failed to load runners</div>';
+                    }
+                    return;
+                }
                 const data = await res.json();
                 runners = data.runners || [];
                 renderRunnerList();

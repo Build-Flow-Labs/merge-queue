@@ -196,6 +196,7 @@ func registerRoutes(mux *http.ServeMux, h *Handlers) {
 	// Dashboard
 	mux.HandleFunc("GET /", h.Dashboard)
 	mux.HandleFunc("GET /runners", h.RunnersPage)
+	mux.HandleFunc("GET /workflows", h.WorkflowsPage)
 
 	// Health
 	mux.HandleFunc("GET /healthz", h.Healthz)
@@ -230,6 +231,9 @@ func registerRoutes(mux *http.ServeMux, h *Handlers) {
 	mux.HandleFunc("GET /api/v1/runners", h.ListRunners)
 	mux.HandleFunc("GET /api/v1/runners/jobs", h.GetRunnerJobs)
 	mux.HandleFunc("GET /api/v1/runners/logs", h.GetJobLogs)
+
+	// API - Workflows
+	mux.HandleFunc("GET /api/v1/workflows", h.ListWorkflowRuns)
 }
 
 // Handlers
