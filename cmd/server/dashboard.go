@@ -27,6 +27,7 @@ const dashboardHTML = `<!DOCTYPE html>
         .repo-item:hover { background: #21262d; }
         .repo-item.active { background: #1f6feb22; color: #58a6ff; }
         .repo-item .queue-badge { background: #1f6feb; color: white; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: auto; }
+        .repo-item .ci-badge { background: #d29922; color: #0d1117; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 4px; }
         .all-repos { font-style: italic; color: #8b949e; }
 
         /* Main content */
@@ -126,7 +127,8 @@ const dashboardHTML = `<!DOCTYPE html>
         let refreshInterval;
         let orgs = [];
         let reposByOrg = {};
-        let queueCounts = {};
+        let queueCounts = {};  // repo -> count of queued items
+        let ciPending = {};    // repo -> count of waiting_ci items
         let currentOrg = localStorage.getItem('mq_org') || '';
         let currentRepo = localStorage.getItem('mq_repo') || '';
 
@@ -168,10 +170,13 @@ const dashboardHTML = `<!DOCTYPE html>
             let html = '<div class="repo-item all-repos' + (currentRepo === '__all__' ? ' active' : '') + '" onclick="selectRepo(\'__all__\')">All repositories</div>';
 
             html += repos.map(repo => {
-                const count = queueCounts[currentOrg + '/' + repo] || 0;
-                const badge = count > 0 ? '<span class="queue-badge">' + count + '</span>' : '';
+                const count = queueCounts[repo] || 0;
+                const ci = ciPending[repo] || 0;
+                let badges = '';
+                if (count > 0) badges += '<span class="queue-badge">' + count + '</span>';
+                if (ci > 0) badges += '<span class="ci-badge">CI ' + ci + '</span>';
                 return '<div class="repo-item' + (repo === currentRepo ? ' active' : '') + '" onclick="selectRepo(\'' + repo + '\')">' +
-                    '<span>📁</span> ' + repo + badge +
+                    '<span>📁</span> ' + repo + badges +
                 '</div>';
             }).join('');
 
@@ -230,7 +235,19 @@ const dashboardHTML = `<!DOCTYPE html>
 
                 const queueRes = await fetch(queueUrl);
                 const queueData = await queueRes.json();
-                renderQueue(queueData.queue || []);
+                const queueItems = queueData.queue || [];
+                renderQueue(queueItems);
+
+                // Update counts for sidebar badges
+                queueCounts = {};
+                ciPending = {};
+                queueItems.forEach(item => {
+                    const key = item.repo;
+                    queueCounts[key] = (queueCounts[key] || 0) + 1;
+                    if (item.status === 'waiting_ci') {
+                        ciPending[key] = (ciPending[key] || 0) + 1;
+                    }
+                });
 
                 const eventsRes = await fetch(eventsUrl);
                 const eventsData = await eventsRes.json();
@@ -275,7 +292,7 @@ const dashboardHTML = `<!DOCTYPE html>
                               '<button class="danger" onclick="cancelItem(\'' + item.id + '\')">Cancel</button>';
                 }
 
-                let retryInfo = '';
+                let statusInfo = '';
                 if (item.status === 'failed' && item.next_retry_at) {
                     const retryTime = new Date(item.next_retry_at);
                     const now = new Date();
@@ -283,10 +300,20 @@ const dashboardHTML = `<!DOCTYPE html>
                     if (secsUntil > 0) {
                         const mins = Math.floor(secsUntil / 60);
                         const secs = secsUntil % 60;
-                        retryInfo = '<div class="pr-meta" style="color: #a371f7;">Auto-retry in ' + mins + 'm ' + secs + 's (attempt ' + (item.retry_count + 1) + '/' + item.max_retries + ')</div>';
+                        statusInfo = '<div class="pr-meta" style="color: #a371f7;">Auto-retry in ' + mins + 'm ' + secs + 's (attempt ' + (item.retry_count + 1) + '/' + item.max_retries + ')</div>';
                     }
                 } else if (item.status === 'failed' && item.retry_count >= item.max_retries) {
-                    retryInfo = '<div class="pr-meta" style="color: #f85149;">Max retries reached (' + item.retry_count + '/' + item.max_retries + ')</div>';
+                    statusInfo = '<div class="pr-meta" style="color: #f85149;">Max retries reached (' + item.retry_count + '/' + item.max_retries + ')</div>';
+                } else if (item.status === 'waiting_ci') {
+                    const waitTime = item.started_at ? Math.floor((new Date() - new Date(item.started_at)) / 1000) : 0;
+                    const mins = Math.floor(waitTime / 60);
+                    statusInfo = '<div class="pr-meta" style="color: #d29922;">⏳ Waiting for CI checks... (' + mins + 'm elapsed)</div>';
+                } else if (item.status === 'resolving_conflicts') {
+                    statusInfo = '<div class="pr-meta" style="color: #d29922;">🔧 Resolving merge conflicts...</div>';
+                } else if (item.status === 'rebasing') {
+                    statusInfo = '<div class="pr-meta" style="color: #a371f7;">🔄 Rebasing branch...</div>';
+                } else if (item.status === 'merging') {
+                    statusInfo = '<div class="pr-meta" style="color: #238636;">🚀 Merging...</div>';
                 }
 
                 const repoLabel = currentRepo === '__all__' ? '<span style="color: #8b949e;">' + item.repo + '</span> · ' : '';
@@ -297,7 +324,7 @@ const dashboardHTML = `<!DOCTYPE html>
                         '<div class="pr-title"><a href="' + prUrl + '" target="_blank">' + repoLabel + '#' + item.pr_number + ' ' + (item.pr_title || 'Untitled') + '</a></div>' +
                         '<div class="pr-meta">' + item.pr_branch + ' → ' + item.base_branch + ' · by ' + (item.pr_author || 'unknown') + '</div>' +
                         (item.error_message ? '<div class="pr-meta" style="color: #f85149;">Error: ' + item.error_message.substring(0, 100) + '...</div>' : '') +
-                        retryInfo +
+                        statusInfo +
                     '</div>' +
                     '<span class="status ' + item.status + '">' + item.status.replace('_', ' ') + '</span>' +
                     '<div class="actions">' + actions + '</div>' +
