@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Build-Flow-Labs/merge-queue/internal/github"
 	"github.com/Build-Flow-Labs/merge-queue/internal/queue"
+	gh "github.com/google/go-github/v60/github"
 )
 
 // GitHubWebhook handles incoming GitHub App webhook events
@@ -565,5 +567,56 @@ func (h *Handlers) ListInstallations(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"installations": installs,
 		"count":         len(installs),
+	})
+}
+
+// ListRepos lists repositories for an organization from GitHub
+func (h *Handlers) ListRepos(w http.ResponseWriter, r *http.Request) {
+	owner := r.URL.Query().Get("owner")
+	if owner == "" {
+		http.Error(w, "owner parameter required", http.StatusBadRequest)
+		return
+	}
+
+	// Get installation for this owner
+	var ghInstallID int64
+	err := h.db.QueryRow(`SELECT github_installation_id FROM installations WHERE owner_login = $1`, owner).Scan(&ghInstallID)
+	if err != nil {
+		http.Error(w, "installation not found", http.StatusNotFound)
+		return
+	}
+
+	// Create GitHub client
+	ghClient, err := github.NewInstallationClient(h.ghConfig, ghInstallID)
+	if err != nil {
+		http.Error(w, "failed to create GitHub client", http.StatusInternalServerError)
+		return
+	}
+
+	// List repos
+	opts := &gh.ListOptions{PerPage: 100}
+	var allRepos []string
+
+	for {
+		repos, resp, err := ghClient.Apps.ListRepos(r.Context(), opts)
+		if err != nil {
+			http.Error(w, "failed to list repos: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		for _, repo := range repos.Repositories {
+			allRepos = append(allRepos, repo.GetName())
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"repos": allRepos,
+		"count": len(allRepos),
 	})
 }
