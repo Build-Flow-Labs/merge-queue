@@ -34,3 +34,27 @@ func NewInstallationClient(config *AppConfig, installationID int64) (*github.Cli
 
 	return github.NewClient(&http.Client{Transport: tr}), nil
 }
+
+// GetInstallationToken returns an access token for git operations
+func GetInstallationToken(config *AppConfig, installationID int64) (string, error) {
+	var tr *ghinstallation.Transport
+	var err error
+
+	if config.PrivateKey != "" {
+		tr, err = ghinstallation.New(http.DefaultTransport, config.AppID, installationID, []byte(config.PrivateKey))
+	} else if config.PrivateKeyPath != "" {
+		tr, err = ghinstallation.NewKeyFromFile(http.DefaultTransport, config.AppID, installationID, config.PrivateKeyPath)
+	} else {
+		return "", fmt.Errorf("no private key configured")
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to create installation transport: %w", err)
+	}
+
+	token, err := tr.Token(nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to get token: %w", err)
+	}
+
+	return token, nil
+}

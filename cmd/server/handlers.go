@@ -289,7 +289,7 @@ func (h *Handlers) GetQueue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.db.Query(`
-		SELECT id, installation_id, owner, repo, pr_number, pr_title, pr_branch, base_branch, pr_author, position, status, error_message, queued_at, started_at, completed_at
+		SELECT id, installation_id, owner, repo, pr_number, pr_title, pr_branch, base_branch, pr_author, position, status, error_message, queued_at, started_at, completed_at, retry_count, max_retries, next_retry_at
 		FROM merge_queue
 		WHERE owner = $1 AND repo = $2 AND status NOT IN ('merged', 'cancelled')
 		ORDER BY position ASC
@@ -304,11 +304,11 @@ func (h *Handlers) GetQueue(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item queue.Item
 		var errMsg sql.NullString
-		var startedAt, completedAt sql.NullTime
+		var startedAt, completedAt, nextRetryAt sql.NullTime
 		if err := rows.Scan(
 			&item.ID, &item.InstallationID, &item.Owner, &item.Repo, &item.PRNumber,
 			&item.PRTitle, &item.PRBranch, &item.BaseBranch, &item.PRAuthor, &item.Position, &item.Status,
-			&errMsg, &item.QueuedAt, &startedAt, &completedAt,
+			&errMsg, &item.QueuedAt, &startedAt, &completedAt, &item.RetryCount, &item.MaxRetries, &nextRetryAt,
 		); err != nil {
 			continue
 		}
@@ -320,6 +320,9 @@ func (h *Handlers) GetQueue(w http.ResponseWriter, r *http.Request) {
 		}
 		if completedAt.Valid {
 			item.CompletedAt = &completedAt.Time
+		}
+		if nextRetryAt.Valid {
+			item.NextRetryAt = &nextRetryAt.Time
 		}
 		items = append(items, item)
 	}
@@ -383,7 +386,7 @@ func (h *Handlers) RetryQueueItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err := h.db.Exec(`
-		UPDATE merge_queue SET status = 'queued', error_message = NULL, started_at = NULL, completed_at = NULL
+		UPDATE merge_queue SET status = 'queued', error_message = NULL, started_at = NULL, completed_at = NULL, retry_count = 0, next_retry_at = NULL
 		WHERE id = $1 AND status IN ('failed', 'paused')
 	`, itemID)
 	if err != nil {

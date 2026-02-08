@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Build-Flow-Labs/merge-queue/internal/git"
 	"github.com/Build-Flow-Labs/merge-queue/internal/github"
 	gh "github.com/google/go-github/v60/github"
 )
@@ -31,6 +32,9 @@ type Item struct {
 	StartedAt      *time.Time `json:"started_at,omitempty"`
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
 	QueuedBy       string     `json:"queued_by,omitempty"`
+	RetryCount     int        `json:"retry_count"`
+	MaxRetries     int        `json:"max_retries"`
+	NextRetryAt    *time.Time `json:"next_retry_at,omitempty"`
 }
 
 // Settings represents per-repository merge queue settings
@@ -99,6 +103,9 @@ func (p *Processor) Stop() {
 
 // processQueues finds all active queues and processes them
 func (p *Processor) processQueues() {
+	// First, check for failed items ready for auto-retry
+	p.processRetries()
+
 	rows, err := p.db.Query(`
 		SELECT DISTINCT installation_id, owner, repo
 		FROM merge_queue
@@ -195,12 +202,75 @@ func (p *Processor) processQueue(installID, owner, repo string) {
 	}
 
 	if pr.GetState() != "open" {
-		p.failItem(item.ID, "PR is no longer open")
+		p.removeClosedPR(item.ID, installID, owner, repo, item.PRNumber, pr.GetState())
 		return
 	}
 
-	// Auto-rebase if enabled
-	if settings.AutoRebase {
+	// Check for merge conflicts
+	mergeable := pr.GetMergeable()
+	mergeableState := pr.GetMergeableState()
+
+	if mergeableState == "dirty" || mergeable == false {
+		// PR has conflicts - try to resolve
+		p.updateStatus(item.ID, "resolving_conflicts")
+		p.logEvent(item.ID, installID, owner, repo, item.PRNumber, "conflicts_detected", "", map[string]interface{}{
+			"mergeable_state": mergeableState,
+		})
+		log.Printf("merge queue: PR #%d has conflicts, attempting to resolve", item.PRNumber)
+
+		// Try GitHub API first (fast path for simple conflicts)
+		_, _, err = ghClient.PullRequests.UpdateBranch(ctx, owner, repo, item.PRNumber, nil)
+		if err != nil {
+			// GitHub API couldn't resolve - try git-based resolution
+			log.Printf("merge queue: GitHub API couldn't resolve conflicts, trying git-based resolution")
+
+			// Get an access token for git operations
+			token, tokenErr := github.GetInstallationToken(p.ghConfig, ghInstallID)
+			if tokenErr != nil {
+				p.failItem(item.ID, fmt.Sprintf("failed to get token for conflict resolution: %v", tokenErr))
+				return
+			}
+
+			resolver := git.NewConflictResolver()
+			result, resolveErr := resolver.Resolve(ctx, token, owner, repo, item.PRBranch, item.BaseBranch)
+
+			if resolveErr != nil {
+				p.failItem(item.ID, fmt.Sprintf("conflict resolution failed: %v", resolveErr))
+				return
+			}
+
+			if !result.Success {
+				p.logEvent(item.ID, installID, owner, repo, item.PRNumber, "conflicts_unresolved", "", map[string]interface{}{
+					"unresolved_files": result.UnresolvedFiles,
+					"resolved_files":   result.ResolvedFiles,
+				})
+				p.failItem(item.ID, fmt.Sprintf("conflicts require manual resolution: %s", result.Message))
+				return
+			}
+
+			p.logEvent(item.ID, installID, owner, repo, item.PRNumber, "conflicts_resolved", "", map[string]interface{}{
+				"method":         "git",
+				"resolved_files": result.ResolvedFiles,
+				"commit_sha":     result.CommitSHA,
+			})
+			log.Printf("merge queue: PR #%d conflicts resolved via git (%s)", item.PRNumber, result.Message)
+		} else {
+			p.logEvent(item.ID, installID, owner, repo, item.PRNumber, "conflicts_resolved", "", map[string]interface{}{
+				"method": "github_api",
+			})
+			log.Printf("merge queue: PR #%d conflicts resolved via GitHub API", item.PRNumber)
+		}
+
+		time.Sleep(5 * time.Second) // Wait for CI to trigger after resolution
+
+		// Re-fetch PR to get updated state
+		pr, _, err = ghClient.PullRequests.Get(ctx, owner, repo, item.PRNumber)
+		if err != nil {
+			p.failItem(item.ID, fmt.Sprintf("failed to get PR after conflict resolution: %v", err))
+			return
+		}
+	} else if settings.AutoRebase {
+		// No conflicts, but auto-rebase is enabled - update branch anyway
 		p.updateStatus(item.ID, "rebasing")
 		_, _, err = ghClient.PullRequests.UpdateBranch(ctx, owner, repo, item.PRNumber, nil)
 		if err != nil {
@@ -350,21 +420,101 @@ func (p *Processor) updateStatus(itemID, status string) {
 
 func (p *Processor) failItem(itemID, errMsg string) {
 	now := time.Now()
-	_, err := p.db.Exec(`
-		UPDATE merge_queue
-		SET status = 'failed', error_message = $1, completed_at = $2
-		WHERE id = $3
-	`, errMsg, now, itemID)
-	if err != nil {
-		log.Printf("merge queue: failed to update failed status: %v", err)
-	}
 
+	// Get current retry count and max retries
+	var retryCount, maxRetries int
 	var installID, owner, repo string
 	var prNumber int
-	_ = p.db.QueryRow(`SELECT installation_id, owner, repo, pr_number FROM merge_queue WHERE id = $1`, itemID).Scan(&installID, &owner, &repo, &prNumber)
-	p.logEvent(itemID, installID, owner, repo, prNumber, "failed", "", map[string]interface{}{"error": errMsg})
+	err := p.db.QueryRow(`
+		SELECT installation_id, owner, repo, pr_number, retry_count, max_retries
+		FROM merge_queue WHERE id = $1
+	`, itemID).Scan(&installID, &owner, &repo, &prNumber, &retryCount, &maxRetries)
+	if err != nil {
+		log.Printf("merge queue: failed to get item for retry check: %v", err)
+		return
+	}
 
-	log.Printf("merge queue: item %s failed: %s", itemID, errMsg)
+	// Increment retry count
+	newRetryCount := retryCount + 1
+
+	// Check if we should schedule a retry
+	if newRetryCount < maxRetries && p.isRetryableError(errMsg) {
+		// Exponential backoff: 1min, 2min, 4min
+		backoff := time.Duration(1<<retryCount) * time.Minute
+		nextRetry := now.Add(backoff)
+
+		_, err = p.db.Exec(`
+			UPDATE merge_queue
+			SET status = 'failed',
+			    error_message = $1,
+			    retry_count = $2,
+			    next_retry_at = $3,
+			    started_at = NULL
+			WHERE id = $4
+		`, errMsg, newRetryCount, nextRetry, itemID)
+		if err != nil {
+			log.Printf("merge queue: failed to schedule retry: %v", err)
+		}
+
+		p.logEvent(itemID, installID, owner, repo, prNumber, "failed", "", map[string]interface{}{
+			"error":         errMsg,
+			"will_retry":    true,
+			"retry_count":   newRetryCount,
+			"next_retry_at": nextRetry.Format(time.RFC3339),
+		})
+		log.Printf("merge queue: item %s failed, will retry in %v (attempt %d/%d): %s", itemID, backoff, newRetryCount, maxRetries, errMsg)
+	} else {
+		// No more retries - mark as permanently failed
+		_, err = p.db.Exec(`
+			UPDATE merge_queue
+			SET status = 'failed',
+			    error_message = $1,
+			    completed_at = $2,
+			    retry_count = $3,
+			    next_retry_at = NULL
+			WHERE id = $4
+		`, errMsg, now, newRetryCount, itemID)
+		if err != nil {
+			log.Printf("merge queue: failed to update failed status: %v", err)
+		}
+
+		p.logEvent(itemID, installID, owner, repo, prNumber, "failed", "", map[string]interface{}{
+			"error":      errMsg,
+			"will_retry": false,
+			"final":      true,
+		})
+		log.Printf("merge queue: item %s permanently failed (no more retries): %s", itemID, errMsg)
+	}
+}
+
+// isRetryableError determines if an error is worth retrying
+func (p *Processor) isRetryableError(errMsg string) bool {
+	// Don't retry user-facing issues that won't change
+	permanentErrors := []string{
+		"PR is no longer open",
+		"merge was not successful",
+		"CI failed with state",
+	}
+	for _, pe := range permanentErrors {
+		if contains(errMsg, pe) {
+			return false
+		}
+	}
+	// Retry transient errors (API failures, timeouts, etc.)
+	return true
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Processor) logEvent(itemID, installID, owner, repo string, prNumber int, eventType, actor string, details map[string]interface{}) {
@@ -391,5 +541,75 @@ func (p *Processor) reorderQueue(installID, owner, repo string) {
 	`, installID, owner, repo)
 	if err != nil {
 		log.Printf("merge queue: failed to reorder queue: %v", err)
+	}
+}
+
+// removeClosedPR removes a PR from the queue when it's no longer open
+func (p *Processor) removeClosedPR(itemID, installID, owner, repo string, prNumber int, prState string) {
+	now := time.Now()
+
+	// If PR was merged externally, mark as merged; otherwise cancelled
+	status := "cancelled"
+	if prState == "merged" {
+		status = "merged"
+	}
+
+	_, err := p.db.Exec(`
+		UPDATE merge_queue
+		SET status = $1, completed_at = $2, error_message = NULL
+		WHERE id = $3
+	`, status, now, itemID)
+	if err != nil {
+		log.Printf("merge queue: failed to remove closed PR: %v", err)
+	}
+
+	p.logEvent(itemID, installID, owner, repo, prNumber, status, "", map[string]interface{}{
+		"reason":   "pr_closed",
+		"pr_state": prState,
+	})
+	log.Printf("merge queue: removed PR #%d from queue (PR state: %s)", prNumber, prState)
+}
+
+// processRetries checks for failed items that are ready for auto-retry
+func (p *Processor) processRetries() {
+	rows, err := p.db.Query(`
+		SELECT id, installation_id, owner, repo, pr_number, retry_count
+		FROM merge_queue
+		WHERE status = 'failed'
+		  AND next_retry_at IS NOT NULL
+		  AND next_retry_at <= NOW()
+		  AND retry_count < max_retries
+	`)
+	if err != nil {
+		log.Printf("merge queue: failed to find items for retry: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, installID, owner, repo string
+		var prNumber, retryCount int
+		if err := rows.Scan(&id, &installID, &owner, &repo, &prNumber, &retryCount); err != nil {
+			continue
+		}
+
+		// Reset to queued status for retry
+		_, err := p.db.Exec(`
+			UPDATE merge_queue
+			SET status = 'queued',
+			    started_at = NULL,
+			    error_message = NULL,
+			    next_retry_at = NULL
+			WHERE id = $1
+		`, id)
+		if err != nil {
+			log.Printf("merge queue: failed to reset item for retry: %v", err)
+			continue
+		}
+
+		p.logEvent(id, installID, owner, repo, prNumber, "auto_retry", "", map[string]interface{}{
+			"retry_count": retryCount + 1,
+		})
+		log.Printf("merge queue: auto-retrying PR #%d in %s/%s (attempt %d)", prNumber, owner, repo, retryCount+1)
 	}
 }

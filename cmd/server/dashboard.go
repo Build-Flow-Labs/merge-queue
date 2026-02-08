@@ -33,6 +33,7 @@ const dashboardHTML = `<!DOCTYPE html>
         .status.queued { background: #1f6feb33; color: #58a6ff; }
         .status.processing { background: #a371f733; color: #a371f7; }
         .status.rebasing { background: #a371f733; color: #a371f7; }
+        .status.resolving_conflicts { background: #d29922; color: #0d1117; }
         .status.waiting_ci { background: #d29922; color: #0d1117; }
         .status.merging { background: #238636; color: white; }
         .status.merged { background: #238636; color: white; }
@@ -208,12 +209,27 @@ const dashboardHTML = `<!DOCTYPE html>
                               '<button class="danger" onclick="cancelItem(\'' + item.id + '\')">Cancel</button>';
                 }
 
+                let retryInfo = '';
+                if (item.status === 'failed' && item.next_retry_at) {
+                    const retryTime = new Date(item.next_retry_at);
+                    const now = new Date();
+                    const secsUntil = Math.max(0, Math.floor((retryTime - now) / 1000));
+                    if (secsUntil > 0) {
+                        const mins = Math.floor(secsUntil / 60);
+                        const secs = secsUntil % 60;
+                        retryInfo = '<div class="pr-meta" style="color: #a371f7;">Auto-retry in ' + mins + 'm ' + secs + 's (attempt ' + (item.retry_count + 1) + '/' + item.max_retries + ')</div>';
+                    }
+                } else if (item.status === 'failed' && item.retry_count >= item.max_retries) {
+                    retryInfo = '<div class="pr-meta" style="color: #f85149;">Max retries reached (' + item.retry_count + '/' + item.max_retries + ')</div>';
+                }
+
                 return '<div class="queue-item">' +
                     '<span class="position">' + item.position + '</span>' +
                     '<div class="pr-info">' +
                         '<div class="pr-title"><a href="' + prUrl + '" target="_blank">#' + item.pr_number + ' ' + (item.pr_title || 'Untitled') + '</a></div>' +
                         '<div class="pr-meta">' + item.repo + ': ' + item.pr_branch + ' → ' + item.base_branch + ' • by ' + (item.pr_author || 'unknown') + '</div>' +
                         (item.error_message ? '<div class="pr-meta" style="color: #f85149;">Error: ' + item.error_message.substring(0, 100) + '...</div>' : '') +
+                        retryInfo +
                     '</div>' +
                     '<span class="status ' + item.status + '">' + item.status.replace('_', ' ') + '</span>' +
                     '<div class="actions">' + actions + '</div>' +
