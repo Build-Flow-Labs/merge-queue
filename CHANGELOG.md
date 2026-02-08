@@ -3,7 +3,9 @@
 ## v2.0.0 - Feature Branch
 - Added conflict resolution
 - Added auto-retry
-# Test changelog
 
 ## v1.0.0
 - Initial release
+
+## v0.9.0 - Main Branch Addition
+- This line added on main
