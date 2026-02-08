@@ -16,6 +16,10 @@ const dashboardHTML = `<!DOCTYPE html>
         .sidebar { width: 260px; background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; flex-shrink: 0; }
         .sidebar-header { padding: 20px; border-bottom: 1px solid #30363d; }
         .sidebar-header h1 { font-size: 18px; color: #58a6ff; display: flex; align-items: center; gap: 8px; }
+        .nav-section { padding: 10px 0; border-bottom: 1px solid #30363d; }
+        .nav-item { padding: 10px 15px; cursor: pointer; display: flex; align-items: center; gap: 10px; text-decoration: none; color: #c9d1d9; }
+        .nav-item:hover { background: #21262d; }
+        .nav-item.active { background: #1f6feb22; border-left: 2px solid #58a6ff; color: #58a6ff; }
         .org-section { padding: 10px 0; border-bottom: 1px solid #30363d; }
         .org-header { padding: 8px 15px; font-size: 11px; text-transform: uppercase; color: #8b949e; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
         .org-name { padding: 8px 15px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
@@ -83,6 +87,10 @@ const dashboardHTML = `<!DOCTYPE html>
     <div class="sidebar">
         <div class="sidebar-header">
             <h1>🚦 Merge Queue</h1>
+        </div>
+        <div class="nav-section">
+            <a href="/" class="nav-item active">🚦 Merge Queue</a>
+            <a href="/runners" class="nav-item">🖥️ Runners</a>
         </div>
         <div class="org-section">
             <div class="org-header">Organizations</div>

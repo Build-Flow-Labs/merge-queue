@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -605,6 +606,130 @@ func (h *Handlers) GetCIStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ciStatus)
+}
+
+// ListRunners lists self-hosted runners for an organization
+func (h *Handlers) ListRunners(w http.ResponseWriter, r *http.Request) {
+	owner := r.URL.Query().Get("owner")
+	if owner == "" {
+		http.Error(w, "owner parameter required", http.StatusBadRequest)
+		return
+	}
+
+	// Get installation for this owner
+	var ghInstallID int64
+	err := h.db.QueryRow(`SELECT github_installation_id FROM installations WHERE owner_login = $1`, owner).Scan(&ghInstallID)
+	if err != nil {
+		http.Error(w, "installation not found", http.StatusNotFound)
+		return
+	}
+
+	// Create GitHub client
+	ghClient, err := github.NewInstallationClient(h.ghConfig, ghInstallID)
+	if err != nil {
+		http.Error(w, "failed to create GitHub client", http.StatusInternalServerError)
+		return
+	}
+
+	// List runners
+	runners, err := github.ListOrgRunners(r.Context(), ghClient, owner)
+	if err != nil {
+		http.Error(w, "failed to list runners: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"runners": runners,
+		"count":   len(runners),
+	})
+}
+
+// GetRunnerJobs gets recent jobs for a specific runner
+func (h *Handlers) GetRunnerJobs(w http.ResponseWriter, r *http.Request) {
+	owner := r.URL.Query().Get("owner")
+	runnerName := r.URL.Query().Get("runner")
+	if owner == "" || runnerName == "" {
+		http.Error(w, "owner and runner parameters required", http.StatusBadRequest)
+		return
+	}
+
+	// Get installation for this owner
+	var ghInstallID int64
+	err := h.db.QueryRow(`SELECT github_installation_id FROM installations WHERE owner_login = $1`, owner).Scan(&ghInstallID)
+	if err != nil {
+		http.Error(w, "installation not found", http.StatusNotFound)
+		return
+	}
+
+	// Create GitHub client
+	ghClient, err := github.NewInstallationClient(h.ghConfig, ghInstallID)
+	if err != nil {
+		http.Error(w, "failed to create GitHub client", http.StatusInternalServerError)
+		return
+	}
+
+	// Get repos to search
+	var repos []string
+	reposRes, _, err := ghClient.Apps.ListRepos(r.Context(), &gh.ListOptions{PerPage: 50})
+	if err == nil {
+		for _, repo := range reposRes.Repositories {
+			repos = append(repos, repo.GetName())
+		}
+	}
+
+	// Get jobs for this runner
+	jobs, err := github.GetRunnerJobs(r.Context(), ghClient, owner, runnerName, repos)
+	if err != nil {
+		http.Error(w, "failed to get runner jobs: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"jobs":  jobs,
+		"count": len(jobs),
+	})
+}
+
+// GetJobLogs gets logs for a specific job
+func (h *Handlers) GetJobLogs(w http.ResponseWriter, r *http.Request) {
+	owner := r.URL.Query().Get("owner")
+	repo := r.URL.Query().Get("repo")
+	jobID := r.URL.Query().Get("job_id")
+	if owner == "" || repo == "" || jobID == "" {
+		http.Error(w, "owner, repo, and job_id parameters required", http.StatusBadRequest)
+		return
+	}
+
+	// Get installation for this owner
+	var ghInstallID int64
+	err := h.db.QueryRow(`SELECT github_installation_id FROM installations WHERE owner_login = $1`, owner).Scan(&ghInstallID)
+	if err != nil {
+		http.Error(w, "installation not found", http.StatusNotFound)
+		return
+	}
+
+	// Create GitHub client
+	ghClient, err := github.NewInstallationClient(h.ghConfig, ghInstallID)
+	if err != nil {
+		http.Error(w, "failed to create GitHub client", http.StatusInternalServerError)
+		return
+	}
+
+	// Parse job ID
+	var id int64
+	fmt.Sscanf(jobID, "%d", &id)
+
+	// Get logs
+	logs, err := github.GetJobLogs(r.Context(), ghClient, owner, repo, id)
+	if err != nil {
+		http.Error(w, "failed to get job logs: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte(logs))
 }
 
 // ListRepos lists repositories for an organization from GitHub
