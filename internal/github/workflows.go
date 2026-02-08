@@ -46,6 +46,11 @@ func ListOrgWorkflowRuns(ctx context.Context, client *github.Client, org string,
 				break
 			}
 
+			sha := run.GetHeadSHA()
+			if len(sha) > 7 {
+				sha = sha[:7]
+			}
+
 			wr := WorkflowRun{
 				ID:         run.GetID(),
 				Name:       run.GetName(),
@@ -53,7 +58,7 @@ func ListOrgWorkflowRuns(ctx context.Context, client *github.Client, org string,
 				Conclusion: run.GetConclusion(),
 				Event:      run.GetEvent(),
 				Branch:     run.GetHeadBranch(),
-				CommitSHA:  run.GetHeadSHA()[:7],
+				CommitSHA:  sha,
 				Actor:      run.GetActor().GetLogin(),
 				RepoName:   repo,
 				HTMLURL:    run.GetHTMLURL(),
@@ -77,10 +82,10 @@ func ListOrgWorkflowRuns(ctx context.Context, client *github.Client, org string,
 		}
 	}
 
-	// Sort by created_at descending (most recent first)
+	// Sort by updated_at descending (most recent activity first)
 	for i := 0; i < len(allRuns)-1; i++ {
 		for j := i + 1; j < len(allRuns); j++ {
-			if allRuns[j].CreatedAt.After(allRuns[i].CreatedAt) {
+			if allRuns[j].UpdatedAt.After(allRuns[i].UpdatedAt) {
 				allRuns[i], allRuns[j] = allRuns[j], allRuns[i]
 			}
 		}
@@ -88,6 +93,78 @@ func ListOrgWorkflowRuns(ctx context.Context, client *github.Client, org string,
 
 	if len(allRuns) > limit {
 		allRuns = allRuns[:limit]
+	}
+
+	return allRuns, nil
+}
+
+// ListInProgressWorkflowRuns lists only in-progress workflow runs
+func ListInProgressWorkflowRuns(ctx context.Context, client *github.Client, org string, repos []string) ([]WorkflowRun, error) {
+	var allRuns []WorkflowRun
+
+	for _, repo := range repos {
+		runs, _, err := client.Actions.ListRepositoryWorkflowRuns(ctx, org, repo, &github.ListWorkflowRunsOptions{
+			Status:      "in_progress",
+			ListOptions: github.ListOptions{PerPage: 20},
+		})
+		if err != nil {
+			continue
+		}
+
+		for _, run := range runs.WorkflowRuns {
+			sha := run.GetHeadSHA()
+			if len(sha) > 7 {
+				sha = sha[:7]
+			}
+
+			wr := WorkflowRun{
+				ID:         run.GetID(),
+				Name:       run.GetName(),
+				Status:     run.GetStatus(),
+				Conclusion: run.GetConclusion(),
+				Event:      run.GetEvent(),
+				Branch:     run.GetHeadBranch(),
+				CommitSHA:  sha,
+				Actor:      run.GetActor().GetLogin(),
+				RepoName:   repo,
+				HTMLURL:    run.GetHTMLURL(),
+				CreatedAt:  run.GetCreatedAt().Time,
+				UpdatedAt:  run.GetUpdatedAt().Time,
+			}
+
+			allRuns = append(allRuns, wr)
+		}
+
+		// Also check queued
+		queuedRuns, _, err := client.Actions.ListRepositoryWorkflowRuns(ctx, org, repo, &github.ListWorkflowRunsOptions{
+			Status:      "queued",
+			ListOptions: github.ListOptions{PerPage: 10},
+		})
+		if err == nil {
+			for _, run := range queuedRuns.WorkflowRuns {
+				sha := run.GetHeadSHA()
+				if len(sha) > 7 {
+					sha = sha[:7]
+				}
+
+				wr := WorkflowRun{
+					ID:         run.GetID(),
+					Name:       run.GetName(),
+					Status:     run.GetStatus(),
+					Conclusion: run.GetConclusion(),
+					Event:      run.GetEvent(),
+					Branch:     run.GetHeadBranch(),
+					CommitSHA:  sha,
+					Actor:      run.GetActor().GetLogin(),
+					RepoName:   repo,
+					HTMLURL:    run.GetHTMLURL(),
+					CreatedAt:  run.GetCreatedAt().Time,
+					UpdatedAt:  run.GetUpdatedAt().Time,
+				}
+
+				allRuns = append(allRuns, wr)
+			}
+		}
 	}
 
 	return allRuns, nil

@@ -744,6 +744,7 @@ func (h *Handlers) GetJobLogs(w http.ResponseWriter, r *http.Request) {
 // ListWorkflowRuns lists recent workflow runs across all repos
 func (h *Handlers) ListWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 	owner := r.URL.Query().Get("owner")
+	status := r.URL.Query().Get("status") // optional: "in_progress" to filter
 	if owner == "" {
 		http.Error(w, "owner parameter required", http.StatusBadRequest)
 		return
@@ -764,17 +765,29 @@ func (h *Handlers) ListWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get repos
+	// Get repos - fetch more repos
 	var repos []string
-	reposRes, _, err := ghClient.Apps.ListRepos(r.Context(), &gh.ListOptions{PerPage: 50})
-	if err == nil {
+	opts := &gh.ListOptions{PerPage: 100}
+	for {
+		reposRes, resp, err := ghClient.Apps.ListRepos(r.Context(), opts)
+		if err != nil {
+			break
+		}
 		for _, repo := range reposRes.Repositories {
 			repos = append(repos, repo.GetName())
 		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
 
-	// Get workflow runs
-	runs, err := github.ListOrgWorkflowRuns(r.Context(), ghClient, owner, repos, 50)
+	var runs []github.WorkflowRun
+	if status == "in_progress" {
+		runs, err = github.ListInProgressWorkflowRuns(r.Context(), ghClient, owner, repos)
+	} else {
+		runs, err = github.ListOrgWorkflowRuns(r.Context(), ghClient, owner, repos, 100)
+	}
 	if err != nil {
 		http.Error(w, "failed to list workflow runs: "+err.Error(), http.StatusInternalServerError)
 		return
