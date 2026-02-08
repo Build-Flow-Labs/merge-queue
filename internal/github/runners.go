@@ -11,12 +11,23 @@ import (
 
 // Runner represents a self-hosted runner
 type Runner struct {
-	ID     int64    `json:"id"`
-	Name   string   `json:"name"`
-	OS     string   `json:"os"`
-	Status string   `json:"status"` // online, offline
-	Busy   bool     `json:"busy"`
-	Labels []string `json:"labels"`
+	ID         int64       `json:"id"`
+	Name       string      `json:"name"`
+	OS         string      `json:"os"`
+	Status     string      `json:"status"` // online, offline
+	Busy       bool        `json:"busy"`
+	Labels     []string    `json:"labels"`
+	CurrentJob *CurrentJob `json:"current_job,omitempty"`
+}
+
+// CurrentJob represents the job currently running on a runner
+type CurrentJob struct {
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	WorkflowName string `json:"workflow_name"`
+	RepoName     string `json:"repo_name"`
+	HTMLURL      string `json:"html_url"`
+	StartedAt    string `json:"started_at"`
 }
 
 // RunnerJob represents a job that ran on a runner
@@ -34,11 +45,14 @@ type RunnerJob struct {
 }
 
 // ListOrgRunners lists all self-hosted runners for an organization
-func ListOrgRunners(ctx context.Context, client *github.Client, org string) ([]Runner, error) {
+func ListOrgRunners(ctx context.Context, client *github.Client, org string, repos []string) ([]Runner, error) {
 	runners, _, err := client.Actions.ListOrganizationRunners(ctx, org, &github.ListOptions{PerPage: 100})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list org runners: %w", err)
 	}
+
+	// Get in-progress jobs to match with busy runners
+	inProgressJobs := getInProgressJobs(ctx, client, org, repos)
 
 	var result []Runner
 	for _, r := range runners.Runners {
@@ -47,17 +61,70 @@ func ListOrgRunners(ctx context.Context, client *github.Client, org string) ([]R
 			labels = append(labels, l.GetName())
 		}
 
-		result = append(result, Runner{
+		runner := Runner{
 			ID:     r.GetID(),
 			Name:   r.GetName(),
 			OS:     r.GetOS(),
 			Status: r.GetStatus(),
 			Busy:   r.GetBusy(),
 			Labels: labels,
-		})
+		}
+
+		// If busy, find the current job
+		if r.GetBusy() {
+			if job, ok := inProgressJobs[r.GetName()]; ok {
+				runner.CurrentJob = job
+			}
+		}
+
+		result = append(result, runner)
 	}
 
 	return result, nil
+}
+
+// getInProgressJobs fetches in-progress jobs across repos and maps them to runner names
+func getInProgressJobs(ctx context.Context, client *github.Client, org string, repos []string) map[string]*CurrentJob {
+	jobs := make(map[string]*CurrentJob)
+
+	for _, repo := range repos {
+		// Get in-progress workflow runs
+		runs, _, err := client.Actions.ListRepositoryWorkflowRuns(ctx, org, repo, &github.ListWorkflowRunsOptions{
+			Status:      "in_progress",
+			ListOptions: github.ListOptions{PerPage: 10},
+		})
+		if err != nil {
+			continue
+		}
+
+		for _, run := range runs.WorkflowRuns {
+			// Get jobs for this run
+			runJobs, _, err := client.Actions.ListWorkflowJobs(ctx, org, repo, run.GetID(), &github.ListWorkflowJobsOptions{
+				Filter: "latest",
+			})
+			if err != nil {
+				continue
+			}
+
+			for _, job := range runJobs.Jobs {
+				if job.GetStatus() == "in_progress" && job.RunnerName != nil {
+					currentJob := &CurrentJob{
+						ID:           job.GetID(),
+						Name:         job.GetName(),
+						WorkflowName: run.GetName(),
+						RepoName:     repo,
+						HTMLURL:      job.GetHTMLURL(),
+					}
+					if job.StartedAt != nil {
+						currentJob.StartedAt = job.StartedAt.Format("2006-01-02T15:04:05Z")
+					}
+					jobs[*job.RunnerName] = currentJob
+				}
+			}
+		}
+	}
+
+	return jobs
 }
 
 // ListRepoRunners lists all self-hosted runners for a repository

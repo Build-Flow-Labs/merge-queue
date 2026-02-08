@@ -631,8 +631,17 @@ func (h *Handlers) ListRunners(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get repos to check for in-progress jobs
+	var repos []string
+	reposRes, _, err := ghClient.Apps.ListRepos(r.Context(), &gh.ListOptions{PerPage: 50})
+	if err == nil {
+		for _, repo := range reposRes.Repositories {
+			repos = append(repos, repo.GetName())
+		}
+	}
+
 	// List runners
-	runners, err := github.ListOrgRunners(r.Context(), ghClient, owner)
+	runners, err := github.ListOrgRunners(r.Context(), ghClient, owner, repos)
 	if err != nil {
 		http.Error(w, "failed to list runners: "+err.Error(), http.StatusInternalServerError)
 		return

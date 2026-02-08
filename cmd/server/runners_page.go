@@ -37,6 +37,7 @@ const runnersHTML = `<!DOCTYPE html>
         .runner-status.busy { background: #d29922; }
         .runner-name { flex: 1; font-size: 14px; }
         .runner-os { font-size: 11px; color: #8b949e; }
+        .runner-job { font-size: 11px; color: #d29922; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
 
         /* Main content */
         .main { flex: 1; overflow-y: auto; padding: 20px 30px; }
@@ -242,9 +243,18 @@ const runnersHTML = `<!DOCTYPE html>
             list.innerHTML = runners.map(r => {
                 const statusClass = r.busy ? 'busy' : r.status;
                 const isActive = currentRunner && currentRunner.id === r.id;
+                let jobInfo = '';
+                if (r.busy && r.current_job) {
+                    jobInfo = '<div class="runner-job" title="' + r.current_job.workflow_name + ' - ' + r.current_job.name + '">▶ ' + r.current_job.repo_name + ': ' + r.current_job.name + '</div>';
+                } else if (r.busy) {
+                    jobInfo = '<div class="runner-job">▶ Running...</div>';
+                }
                 return '<div class="runner-item' + (isActive ? ' active' : '') + '" onclick="selectRunner(' + r.id + ')">' +
                     '<span class="runner-status ' + statusClass + '"></span>' +
-                    '<span class="runner-name">' + r.name + '</span>' +
+                    '<div style="flex:1;min-width:0;">' +
+                        '<div class="runner-name">' + r.name + '</div>' +
+                        jobInfo +
+                    '</div>' +
                     '<span class="runner-os">' + r.os + '</span>' +
                 '</div>';
             }).join('');
@@ -263,7 +273,13 @@ const runnersHTML = `<!DOCTYPE html>
             const statusClass = currentRunner.busy ? 'busy' : currentRunner.status;
             document.getElementById('detail-status').className = 'runner-status ' + statusClass;
             document.getElementById('detail-name').textContent = currentRunner.name;
-            document.getElementById('detail-status-text').textContent = currentRunner.busy ? 'Busy' : (currentRunner.status === 'online' ? 'Online' : 'Offline');
+            let statusText = currentRunner.status === 'online' ? 'Online' : 'Offline';
+            if (currentRunner.busy && currentRunner.current_job) {
+                statusText = 'Running: <a href="' + currentRunner.current_job.html_url + '" target="_blank" style="color:#58a6ff;">' + currentRunner.current_job.repo_name + ' / ' + currentRunner.current_job.name + '</a>';
+            } else if (currentRunner.busy) {
+                statusText = 'Busy';
+            }
+            document.getElementById('detail-status-text').innerHTML = statusText;
             document.getElementById('detail-os').textContent = currentRunner.os;
 
             // Render labels
