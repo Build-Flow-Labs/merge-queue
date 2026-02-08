@@ -232,6 +232,15 @@ func (p *Processor) processQueue(installID, owner, repo string) {
 			}
 
 			state := combined.GetState()
+			totalChecks := combined.GetTotalCount()
+
+			// If no CI checks exist, treat as success
+			if totalChecks == 0 {
+				log.Printf("merge queue: PR #%d has no CI checks, proceeding", item.PRNumber)
+				p.logEvent(item.ID, installID, owner, repo, item.PRNumber, "ci_passed", "", map[string]interface{}{"reason": "no_checks"})
+				break
+			}
+
 			if state == "success" {
 				p.logEvent(item.ID, installID, owner, repo, item.PRNumber, "ci_passed", "", nil)
 				break

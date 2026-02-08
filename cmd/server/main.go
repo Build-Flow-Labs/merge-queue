@@ -193,6 +193,9 @@ func withCORS(next http.Handler) http.Handler {
 // Routes
 
 func registerRoutes(mux *http.ServeMux, h *Handlers) {
+	// Dashboard
+	mux.HandleFunc("GET /", h.Dashboard)
+
 	// Health
 	mux.HandleFunc("GET /healthz", h.Healthz)
 
