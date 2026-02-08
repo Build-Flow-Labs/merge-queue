@@ -323,7 +323,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     '<div class="pr-info">' +
                         '<div class="pr-title"><a href="' + prUrl + '" target="_blank">' + repoLabel + '#' + item.pr_number + ' ' + (item.pr_title || 'Untitled') + '</a></div>' +
                         '<div class="pr-meta">' + item.pr_branch + ' → ' + item.base_branch + ' · by ' + (item.pr_author || 'unknown') + '</div>' +
-                        (item.error_message ? '<div class="pr-meta" style="color: #f85149;">Error: ' + item.error_message.substring(0, 100) + '...</div>' : '') +
+                        (item.error_message ? '<div class="pr-meta" style="color: #f85149;">' + formatError(item.error_message) + '</div>' : '') +
                         statusInfo +
                     '</div>' +
                     '<span class="status ' + item.status + '">' + item.status.replace('_', ' ') + '</span>' +
@@ -370,6 +370,42 @@ const dashboardHTML = `<!DOCTYPE html>
             const el = document.getElementById('error');
             el.textContent = msg;
             el.style.display = 'block';
+        }
+
+        function formatError(msg) {
+            // Parse common merge failure reasons
+            let reasons = [];
+
+            if (msg.includes('approving review')) {
+                reasons.push('👤 Review required');
+            }
+            if (msg.includes('status checks')) {
+                const match = msg.match(/(\d+) of (\d+) required status checks/);
+                if (match) {
+                    reasons.push('🔴 CI: ' + match[1] + '/' + match[2] + ' checks pending');
+                } else {
+                    reasons.push('🔴 CI checks required');
+                }
+            }
+            if (msg.includes('conflict')) {
+                reasons.push('⚠️ Merge conflicts');
+            }
+            if (msg.includes('not mergeable')) {
+                reasons.push('⚠️ Not mergeable');
+            }
+            if (msg.includes('CI failed')) {
+                reasons.push('❌ CI failed');
+            }
+            if (msg.includes('CI timeout')) {
+                reasons.push('⏱️ CI timeout');
+            }
+
+            if (reasons.length > 0) {
+                return reasons.join(' · ');
+            }
+
+            // Fallback to truncated message
+            return 'Error: ' + msg.substring(0, 80) + (msg.length > 80 ? '...' : '');
         }
 
         init();
