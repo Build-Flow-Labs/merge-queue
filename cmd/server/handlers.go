@@ -384,7 +384,7 @@ func (h *Handlers) RetryQueueItem(w http.ResponseWriter, r *http.Request) {
 
 	_, err := h.db.Exec(`
 		UPDATE merge_queue SET status = 'queued', error_message = NULL, started_at = NULL, completed_at = NULL
-		WHERE id = $1 AND status = 'failed'
+		WHERE id = $1 AND status IN ('failed', 'paused')
 	`, itemID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -392,6 +392,26 @@ func (h *Handlers) RetryQueueItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "queued"})
+}
+
+// PauseQueueItem pauses a queue item
+func (h *Handlers) PauseQueueItem(w http.ResponseWriter, r *http.Request) {
+	itemID := r.PathValue("id")
+	if itemID == "" {
+		http.Error(w, "id required", http.StatusBadRequest)
+		return
+	}
+
+	_, err := h.db.Exec(`
+		UPDATE merge_queue SET status = 'paused', error_message = NULL
+		WHERE id = $1 AND status IN ('queued', 'failed')
+	`, itemID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "paused"})
 }
 
 func (h *Handlers) GetSettings(w http.ResponseWriter, r *http.Request) {

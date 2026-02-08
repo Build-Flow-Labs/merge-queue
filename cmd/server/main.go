@@ -207,6 +207,7 @@ func registerRoutes(mux *http.ServeMux, h *Handlers) {
 	mux.HandleFunc("POST /api/v1/queue", h.AddToQueue)
 	mux.HandleFunc("DELETE /api/v1/queue/{id}", h.RemoveFromQueue)
 	mux.HandleFunc("POST /api/v1/queue/{id}/retry", h.RetryQueueItem)
+	mux.HandleFunc("POST /api/v1/queue/{id}/pause", h.PauseQueueItem)
 
 	// API - Settings
 	mux.HandleFunc("GET /api/v1/settings", h.GetSettings)
