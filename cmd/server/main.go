@@ -221,6 +221,9 @@ func registerRoutes(mux *http.ServeMux, h *Handlers) {
 
 	// API - Repos
 	mux.HandleFunc("GET /api/v1/repos", h.ListRepos)
+
+	// API - CI Status
+	mux.HandleFunc("GET /api/v1/ci-status", h.GetCIStatus)
 }
 
 // Handlers

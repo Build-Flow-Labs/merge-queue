@@ -238,7 +238,7 @@ const dashboardHTML = `<!DOCTYPE html>
                 const queueItems = queueData.queue || [];
                 renderQueue(queueItems);
 
-                // Update counts for sidebar badges
+                // Update counts for sidebar badges and prefetch CI status
                 queueCounts = {};
                 ciPending = {};
                 queueItems.forEach(item => {
@@ -246,6 +246,8 @@ const dashboardHTML = `<!DOCTYPE html>
                     queueCounts[key] = (queueCounts[key] || 0) + 1;
                     if (item.status === 'waiting_ci') {
                         ciPending[key] = (ciPending[key] || 0) + 1;
+                        // Prefetch CI status for waiting items
+                        fetchCIStatus(item.owner, item.repo, item.pr_branch);
                     }
                 });
 
@@ -259,6 +261,9 @@ const dashboardHTML = `<!DOCTYPE html>
                     reposByOrg[e.owner].add(e.repo);
                 });
                 renderRepoList();
+
+                // Clear CI status cache on refresh to get fresh data
+                ciStatusCache = {};
 
                 if (refreshInterval) clearInterval(refreshInterval);
                 refreshInterval = setInterval(loadQueue, 5000);
@@ -307,7 +312,24 @@ const dashboardHTML = `<!DOCTYPE html>
                 } else if (item.status === 'waiting_ci') {
                     const waitTime = item.started_at ? Math.floor((new Date() - new Date(item.started_at)) / 1000) : 0;
                     const mins = Math.floor(waitTime / 60);
-                    statusInfo = '<div class="pr-meta" style="color: #d29922;">⏳ Waiting for CI checks... (' + mins + 'm elapsed)</div>';
+                    // Fetch CI status for this item
+                    const ciKey = item.owner + '/' + item.repo + '/' + item.pr_branch;
+                    const ciInfo = ciStatusCache[ciKey];
+                    if (ciInfo) {
+                        const runnerInfo = ciInfo.has_self_hosted ? '🖥️ Self-hosted' : '☁️ GitHub-hosted';
+                        const checksInfo = ciInfo.passed_checks + '/' + ciInfo.total_checks + ' passed, ' + ciInfo.pending_checks + ' pending';
+                        statusInfo = '<div class="pr-meta" style="color: #d29922;">⏳ ' + runnerInfo + ' · ' + checksInfo + ' (' + mins + 'm)</div>';
+                        if (ciInfo.checks && ciInfo.checks.length > 0) {
+                            const pendingChecks = ciInfo.checks.filter(c => c.status !== 'completed').map(c => c.name).slice(0, 3);
+                            if (pendingChecks.length > 0) {
+                                statusInfo += '<div class="pr-meta" style="color: #8b949e; font-size: 11px;">Running: ' + pendingChecks.join(', ') + '</div>';
+                            }
+                        }
+                    } else {
+                        statusInfo = '<div class="pr-meta" style="color: #d29922;">⏳ Waiting for CI checks... (' + mins + 'm elapsed)</div>';
+                        // Trigger async fetch of CI status
+                        fetchCIStatus(item.owner, item.repo, item.pr_branch);
+                    }
                 } else if (item.status === 'resolving_conflicts') {
                     statusInfo = '<div class="pr-meta" style="color: #d29922;">🔧 Resolving merge conflicts...</div>';
                 } else if (item.status === 'rebasing') {
@@ -370,6 +392,21 @@ const dashboardHTML = `<!DOCTYPE html>
             const el = document.getElementById('error');
             el.textContent = msg;
             el.style.display = 'block';
+        }
+
+        let ciStatusCache = {};
+
+        async function fetchCIStatus(owner, repo, ref) {
+            const key = owner + '/' + repo + '/' + ref;
+            if (ciStatusCache[key]) return;
+            try {
+                const res = await fetch('/api/v1/ci-status?owner=' + owner + '&repo=' + repo + '&ref=' + ref);
+                if (res.ok) {
+                    ciStatusCache[key] = await res.json();
+                }
+            } catch (err) {
+                console.error('Failed to fetch CI status:', err);
+            }
         }
 
         function formatError(msg) {

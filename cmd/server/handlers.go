@@ -570,6 +570,43 @@ func (h *Handlers) ListInstallations(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GetCIStatus returns detailed CI status for a PR including runner information
+func (h *Handlers) GetCIStatus(w http.ResponseWriter, r *http.Request) {
+	owner := r.URL.Query().Get("owner")
+	repo := r.URL.Query().Get("repo")
+	ref := r.URL.Query().Get("ref")
+
+	if owner == "" || repo == "" || ref == "" {
+		http.Error(w, "owner, repo, and ref parameters required", http.StatusBadRequest)
+		return
+	}
+
+	// Get installation for this owner
+	var ghInstallID int64
+	err := h.db.QueryRow(`SELECT github_installation_id FROM installations WHERE owner_login = $1`, owner).Scan(&ghInstallID)
+	if err != nil {
+		http.Error(w, "installation not found", http.StatusNotFound)
+		return
+	}
+
+	// Create GitHub client
+	ghClient, err := github.NewInstallationClient(h.ghConfig, ghInstallID)
+	if err != nil {
+		http.Error(w, "failed to create GitHub client", http.StatusInternalServerError)
+		return
+	}
+
+	// Get CI status
+	ciStatus, err := github.GetCIStatus(r.Context(), ghClient, owner, repo, ref)
+	if err != nil {
+		http.Error(w, "failed to get CI status: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ciStatus)
+}
+
 // ListRepos lists repositories for an organization from GitHub
 func (h *Handlers) ListRepos(w http.ResponseWriter, r *http.Request) {
 	owner := r.URL.Query().Get("owner")

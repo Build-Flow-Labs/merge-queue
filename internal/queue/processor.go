@@ -293,30 +293,57 @@ func (p *Processor) processQueue(installID, owner, repo string) {
 		timeout := time.Duration(settings.CITimeoutMinutes) * time.Minute
 		deadline := time.Now().Add(timeout)
 
+		var lastLoggedPending int
 		for time.Now().Before(deadline) {
-			combined, _, err := ghClient.Repositories.GetCombinedStatus(ctx, owner, repo, item.PRBranch, nil)
+			// Use the new CI status checker that handles both Checks API and Status API
+			ciStatus, err := github.GetCIStatus(ctx, ghClient, owner, repo, item.PRBranch)
 			if err != nil {
 				log.Printf("merge queue: failed to get CI status: %v", err)
 				time.Sleep(30 * time.Second)
 				continue
 			}
 
-			state := combined.GetState()
-			totalChecks := combined.GetTotalCount()
-
 			// If no CI checks exist, treat as success
-			if totalChecks == 0 {
+			if ciStatus.TotalChecks == 0 {
 				log.Printf("merge queue: PR #%d has no CI checks, proceeding", item.PRNumber)
 				p.logEvent(item.ID, installID, owner, repo, item.PRNumber, "ci_passed", "", map[string]interface{}{"reason": "no_checks"})
 				break
 			}
 
-			if state == "success" {
-				p.logEvent(item.ID, installID, owner, repo, item.PRNumber, "ci_passed", "", nil)
+			// Log runner detection on first check
+			if ciStatus.HasSelfHosted {
+				log.Printf("merge queue: PR #%d using self-hosted runners (%d self-hosted, %d github-hosted)",
+					item.PRNumber, ciStatus.SelfHostedCount, ciStatus.HostedCount)
+			}
+
+			// Log progress periodically
+			if ciStatus.PendingChecks != lastLoggedPending {
+				log.Printf("merge queue: PR #%d CI status: %d/%d passed, %d pending, %d failed",
+					item.PRNumber, ciStatus.PassedChecks, ciStatus.TotalChecks, ciStatus.PendingChecks, ciStatus.FailedChecks)
+				lastLoggedPending = ciStatus.PendingChecks
+			}
+
+			if ciStatus.State == "success" {
+				p.logEvent(item.ID, installID, owner, repo, item.PRNumber, "ci_passed", "", map[string]interface{}{
+					"total_checks":    ciStatus.TotalChecks,
+					"has_self_hosted": ciStatus.HasSelfHosted,
+					"self_hosted":     ciStatus.SelfHostedCount,
+					"github_hosted":   ciStatus.HostedCount,
+				})
 				break
-			} else if state == "failure" || state == "error" {
-				p.logEvent(item.ID, installID, owner, repo, item.PRNumber, "ci_failed", "", map[string]interface{}{"state": state})
-				p.failItem(item.ID, fmt.Sprintf("CI failed with state: %s", state))
+			} else if ciStatus.State == "failure" {
+				// Collect failed check names
+				var failedNames []string
+				for _, check := range ciStatus.Checks {
+					if check.Conclusion == "failure" || check.Conclusion == "timed_out" || check.Conclusion == "cancelled" {
+						failedNames = append(failedNames, check.Name)
+					}
+				}
+				p.logEvent(item.ID, installID, owner, repo, item.PRNumber, "ci_failed", "", map[string]interface{}{
+					"state":         ciStatus.State,
+					"failed_checks": failedNames,
+				})
+				p.failItem(item.ID, fmt.Sprintf("CI failed: %v", failedNames))
 				return
 			}
 
