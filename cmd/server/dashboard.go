@@ -288,6 +288,7 @@ const dashboardHTML = `<!DOCTYPE html>
         }
 
         function renderQueue(items) {
+            try {
             const container = document.getElementById('queue-items');
             document.getElementById('queue-count').textContent = items.length + ' items';
 
@@ -363,10 +364,14 @@ const dashboardHTML = `<!DOCTYPE html>
                         (item.error_message ? '<div class="pr-meta" style="color: #f85149;">' + formatError(item.error_message) + '</div>' : '') +
                         statusInfo +
                     '</div>' +
-                    '<span class="status ' + item.status + '" title="' + (item.status_detail || '') + '">' + (item.status_detail || item.status.replace('_', ' ')) + '</span>' +
+                    '<span class="status ' + item.status + '">' + escapeHtml(item.status_detail || item.status.replace('_', ' ')) + '</span>' +
                     '<div class="actions">' + actions + '</div>' +
                 '</div>';
             }).join('');
+            } catch (e) {
+                console.error('renderQueue error:', e);
+                document.getElementById('queue-items').innerHTML = '<div class="error">Error rendering queue: ' + e.message + '</div>';
+            }
         }
 
         function renderEvents(events) {
@@ -424,6 +429,11 @@ const dashboardHTML = `<!DOCTYPE html>
             } catch (err) {
                 console.error('Failed to fetch CI status:', err);
             }
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         }
 
         // Fix Safari date parsing (can't handle microseconds)
