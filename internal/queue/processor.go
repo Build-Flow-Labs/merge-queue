@@ -27,6 +27,7 @@ type Item struct {
 	PRAuthor       string     `json:"pr_author"`
 	Position       int        `json:"position"`
 	Status         string     `json:"status"`
+	StatusDetail   string     `json:"status_detail,omitempty"`
 	ErrorMessage   *string    `json:"error_message,omitempty"`
 	QueuedAt       time.Time  `json:"queued_at"`
 	StartedAt      *time.Time `json:"started_at,omitempty"`
@@ -35,6 +36,53 @@ type Item struct {
 	RetryCount     int        `json:"retry_count"`
 	MaxRetries     int        `json:"max_retries"`
 	NextRetryAt    *time.Time `json:"next_retry_at,omitempty"`
+}
+
+// StatusDetailFor returns a human-readable status detail based on the current status
+func StatusDetailFor(status string, errorMsg *string) string {
+	switch status {
+	case "queued":
+		return "Waiting in queue"
+	case "processing":
+		return "Starting processing"
+	case "rebasing":
+		return "Updating branch with latest changes"
+	case "resolving_conflicts":
+		return "Resolving merge conflicts"
+	case "waiting_ci":
+		return "Waiting for CI to pass"
+	case "approving":
+		return "Submitting approval"
+	case "merging":
+		return "Merging PR"
+	case "merged":
+		return "Successfully merged"
+	case "failed":
+		if errorMsg != nil {
+			if contains(*errorMsg, "approving review is required") {
+				return "Needs approval"
+			}
+			if contains(*errorMsg, "status checks") {
+				return "Waiting for required status checks"
+			}
+			if contains(*errorMsg, "conflict") {
+				return "Has merge conflicts"
+			}
+			if contains(*errorMsg, "CI failed") {
+				return "CI failed"
+			}
+			if contains(*errorMsg, "CI timeout") {
+				return "CI timed out"
+			}
+		}
+		return "Failed"
+	case "cancelled":
+		return "Cancelled"
+	case "paused":
+		return "Paused"
+	default:
+		return status
+	}
 }
 
 // Settings represents per-repository merge queue settings
@@ -426,6 +474,17 @@ func (p *Processor) processQueue(installID, owner, repo string) {
 		}
 	}
 
+	// Auto-approve the PR if needed
+	p.updateStatus(item.ID, "approving")
+	approved, err := p.ensureApproval(ctx, ghClient, owner, repo, item.PRNumber)
+	if err != nil {
+		log.Printf("merge queue: failed to check/submit approval for PR #%d: %v", item.PRNumber, err)
+		// Continue anyway - merge will fail if approval is actually required
+	} else if approved {
+		p.logEvent(item.ID, installID, owner, repo, item.PRNumber, "approved", "merge-queue[bot]", nil)
+		log.Printf("merge queue: bot approved PR #%d", item.PRNumber)
+	}
+
 	// Merge the PR
 	p.updateStatus(item.ID, "merging")
 
@@ -728,4 +787,45 @@ func (p *Processor) processRetries() {
 		})
 		log.Printf("merge queue: auto-retrying PR #%d in %s/%s (attempt %d)", prNumber, owner, repo, retryCount+1)
 	}
+}
+
+// ensureApproval checks if the PR needs approval and submits one if needed.
+// Returns true if a new approval was submitted, false if already approved or not needed.
+func (p *Processor) ensureApproval(ctx context.Context, client *gh.Client, owner, repo string, prNumber int) (bool, error) {
+	// Check existing reviews
+	reviews, _, err := client.PullRequests.ListReviews(ctx, owner, repo, prNumber, &gh.ListOptions{PerPage: 100})
+	if err != nil {
+		return false, fmt.Errorf("failed to list reviews: %w", err)
+	}
+
+	// Check if already approved by our bot or anyone
+	for _, review := range reviews {
+		if review.GetState() == "APPROVED" {
+			// Already has an approval
+			return false, nil
+		}
+	}
+
+	// Submit approval
+	review := &gh.PullRequestReviewRequest{
+		Event: gh.String("APPROVE"),
+		Body:  gh.String("Auto-approved by merge queue: branch is up to date, CI passed, no conflicts."),
+	}
+
+	_, _, err = client.PullRequests.CreateReview(ctx, owner, repo, prNumber, review)
+	if err != nil {
+		return false, fmt.Errorf("failed to submit approval: %w", err)
+	}
+
+	return true, nil
+}
+
+// PRRequirements represents what a PR needs before it can be merged
+type PRRequirements struct {
+	NeedsRebase   bool   `json:"needs_rebase"`
+	NeedsCI       bool   `json:"needs_ci"`
+	NeedsApproval bool   `json:"needs_approval"`
+	HasConflicts  bool   `json:"has_conflicts"`
+	IsReady       bool   `json:"is_ready"`
+	Summary       string `json:"summary"`
 }

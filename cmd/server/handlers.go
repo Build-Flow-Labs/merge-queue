@@ -52,6 +52,8 @@ func (h *Handlers) GitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		h.handleWorkflowRun(w, body)
 	case "workflow_job":
 		h.handleWorkflowJob(w, body)
+	case "pull_request_review":
+		h.handlePullRequestReview(w, body)
 	case "ping":
 		writeJSON(w, http.StatusOK, map[string]string{"status": "pong"})
 	default:
@@ -297,6 +299,17 @@ type workflowJobEvent struct {
 	} `json:"repository"`
 }
 
+type pullRequestReviewEvent struct {
+	Action string `json:"action"`
+	Review struct {
+		State string `json:"state"` // approved, changes_requested, commented
+	} `json:"review"`
+	Repository struct {
+		Name  string `json:"name"`
+		Owner struct{ Login string `json:"login"` } `json:"owner"`
+	} `json:"repository"`
+}
+
 func (h *Handlers) handleCheckRun(w http.ResponseWriter, body []byte) {
 	var evt checkRunEvent
 	if err := json.Unmarshal(body, &evt); err != nil {
@@ -386,6 +399,25 @@ func (h *Handlers) handleWorkflowJob(w http.ResponseWriter, body []byte) {
 	// Only react to completed jobs
 	if evt.WorkflowJob.Status == "completed" {
 		log.Printf("workflow_job completed for %s/%s (conclusion: %s)", owner, repo, evt.WorkflowJob.Conclusion)
+		h.processor.Wake(owner, repo)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handlers) handlePullRequestReview(w http.ResponseWriter, body []byte) {
+	var evt pullRequestReviewEvent
+	if err := json.Unmarshal(body, &evt); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	owner := evt.Repository.Owner.Login
+	repo := evt.Repository.Name
+
+	// React to submitted reviews (especially approvals)
+	if evt.Action == "submitted" && evt.Review.State == "approved" {
+		log.Printf("pull_request_review approved for %s/%s", owner, repo)
 		h.processor.Wake(owner, repo)
 	}
 
@@ -496,6 +528,8 @@ func (h *Handlers) GetQueue(w http.ResponseWriter, r *http.Request) {
 		if nextRetryAt.Valid {
 			item.NextRetryAt = &nextRetryAt.Time
 		}
+		// Add human-readable status detail
+		item.StatusDetail = queue.StatusDetailFor(item.Status, item.ErrorMessage)
 		items = append(items, item)
 	}
 
