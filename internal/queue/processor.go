@@ -206,9 +206,23 @@ func (p *Processor) Wake(owner, repo string) {
 
 // processRepoIfReady processes a specific repo's queue if not already processing
 func (p *Processor) processRepoIfReady(owner, repo string) {
+	// Reset failed items to queued - CI webhook means checks may have completed
+	result, err := p.db.Exec(`
+		UPDATE merge_queue
+		SET status = 'queued', started_at = NULL, error_message = NULL
+		WHERE owner = $1 AND repo = $2
+		  AND status = 'failed'
+		  AND retry_count < max_retries
+	`, owner, repo)
+	if err == nil {
+		if rows, _ := result.RowsAffected(); rows > 0 {
+			log.Printf("merge queue: auto-retried %d failed items for %s/%s", rows, owner, repo)
+		}
+	}
+
 	// Find installation ID for this repo
 	var installID string
-	err := p.db.QueryRow(`
+	err = p.db.QueryRow(`
 		SELECT DISTINCT installation_id
 		FROM merge_queue
 		WHERE owner = $1 AND repo = $2
