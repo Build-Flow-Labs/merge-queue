@@ -282,7 +282,8 @@ const dashboardHTML = `<!DOCTYPE html>
                 if (refreshInterval) clearInterval(refreshInterval);
                 refreshInterval = setInterval(loadQueue, 5000);
             } catch (err) {
-                showError('Failed to load: ' + err.message);
+                console.error('loadQueue error:', err);
+                showError('Failed to load queue data. Check console for details.');
             }
         }
 
@@ -411,10 +412,12 @@ const dashboardHTML = `<!DOCTYPE html>
         let ciStatusCache = {};
 
         async function fetchCIStatus(owner, repo, ref) {
+            if (!owner || !repo || !ref) return;
             const key = owner + '/' + repo + '/' + ref;
             if (ciStatusCache[key]) return;
             try {
-                const res = await fetch('/api/v1/ci-status?owner=' + owner + '&repo=' + repo + '&ref=' + ref);
+                const url = '/api/v1/ci-status?owner=' + encodeURIComponent(owner) + '&repo=' + encodeURIComponent(repo) + '&ref=' + encodeURIComponent(ref);
+                const res = await fetch(url);
                 if (res.ok) {
                     ciStatusCache[key] = await res.json();
                 }
@@ -425,11 +428,16 @@ const dashboardHTML = `<!DOCTYPE html>
 
         // Fix Safari date parsing (can't handle microseconds)
         function parseDate(dateStr) {
-            if (!dateStr) return new Date();
-            // Truncate microseconds to milliseconds for Safari compatibility
-            const fixed = dateStr.replace(/\.(\d{3})\d*Z$/, '.$1Z');
-            const d = new Date(fixed);
-            return isNaN(d.getTime()) ? new Date() : d;
+            try {
+                if (!dateStr) return new Date();
+                // Truncate microseconds to milliseconds for Safari compatibility
+                const fixed = dateStr.replace(/\.(\d{3})\d*Z$/, '.$1Z');
+                const d = new Date(fixed);
+                return isNaN(d.getTime()) ? new Date() : d;
+            } catch (e) {
+                console.error('parseDate failed for:', dateStr, e);
+                return new Date();
+            }
         }
 
         function formatError(msg) {
