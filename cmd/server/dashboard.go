@@ -313,7 +313,7 @@ const dashboardHTML = `<!DOCTYPE html>
 
                 let statusInfo = '';
                 if (item.status === 'failed' && item.next_retry_at) {
-                    const retryTime = new Date(item.next_retry_at);
+                    const retryTime = parseDate(item.next_retry_at);
                     const now = new Date();
                     const secsUntil = Math.max(0, Math.floor((retryTime - now) / 1000));
                     if (secsUntil > 0) {
@@ -324,7 +324,7 @@ const dashboardHTML = `<!DOCTYPE html>
                 } else if (item.status === 'failed' && item.retry_count >= item.max_retries) {
                     statusInfo = '<div class="pr-meta" style="color: #f85149;">Max retries reached (' + item.retry_count + '/' + item.max_retries + ')</div>';
                 } else if (item.status === 'waiting_ci') {
-                    const waitTime = item.started_at ? Math.floor((new Date() - new Date(item.started_at)) / 1000) : 0;
+                    const waitTime = item.started_at ? Math.floor((new Date() - parseDate(item.started_at)) / 1000) : 0;
                     const mins = Math.floor(waitTime / 60);
                     // Fetch CI status for this item
                     const ciKey = item.owner + '/' + item.repo + '/' + item.pr_branch;
@@ -362,7 +362,7 @@ const dashboardHTML = `<!DOCTYPE html>
                         (item.error_message ? '<div class="pr-meta" style="color: #f85149;">' + formatError(item.error_message) + '</div>' : '') +
                         statusInfo +
                     '</div>' +
-                    '<span class="status ' + item.status + '">' + item.status.replace('_', ' ') + '</span>' +
+                    '<span class="status ' + item.status + '" title="' + (item.status_detail || '') + '">' + (item.status_detail || item.status.replace('_', ' ')) + '</span>' +
                     '<div class="actions">' + actions + '</div>' +
                 '</div>';
             }).join('');
@@ -380,7 +380,7 @@ const dashboardHTML = `<!DOCTYPE html>
                 return '<div class="event ' + event.event_type + '">' +
                     '<span class="event-type">' + event.event_type.replace('_', ' ') + '</span> ' +
                     '<a href="' + prUrl + '" target="_blank" style="color: #58a6ff;">PR #' + event.pr_number + '</a>' + repoLabel +
-                    '<div class="event-time">' + new Date(event.created_at).toLocaleString() + '</div>' +
+                    '<div class="event-time">' + parseDate(event.created_at).toLocaleString() + '</div>' +
                 '</div>';
             }).join('');
         }
@@ -421,6 +421,13 @@ const dashboardHTML = `<!DOCTYPE html>
             } catch (err) {
                 console.error('Failed to fetch CI status:', err);
             }
+        }
+
+        // Fix Safari date parsing (can't handle microseconds)
+        function parseDate(dateStr) {
+            if (!dateStr) return null;
+            // Truncate microseconds to milliseconds for Safari compatibility
+            return new Date(dateStr.replace(/\.(\d{3})\d*Z$/, '.$1Z'));
         }
 
         function formatError(msg) {
