@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"sync"
 	"time"
 
@@ -13,6 +14,28 @@ import (
 	"github.com/Build-Flow-Labs/merge-queue/internal/github"
 	gh "github.com/google/go-github/v60/github"
 )
+
+var statusCheckRegex = regexp.MustCompile(`(\d+) of (\d+) required status checks (are expected|are queued|have not succeeded)`)
+
+// extractStatusCheckDetail parses error messages to extract status check details
+func extractStatusCheckDetail(msg string) string {
+	matches := statusCheckRegex.FindStringSubmatch(msg)
+	if len(matches) >= 4 {
+		pending := matches[1]
+		total := matches[2]
+		state := matches[3]
+		switch state {
+		case "are expected":
+			return fmt.Sprintf("CI: %s/%s checks not started", pending, total)
+		case "are queued":
+			return fmt.Sprintf("CI: %s/%s checks queued", pending, total)
+		case "have not succeeded":
+			return fmt.Sprintf("CI: %s/%s checks pending", pending, total)
+		}
+		return fmt.Sprintf("CI: %s/%s checks pending", pending, total)
+	}
+	return ""
+}
 
 // Item represents a PR in the merge queue
 type Item struct {
@@ -59,20 +82,29 @@ func StatusDetailFor(status string, errorMsg *string) string {
 		return "Successfully merged"
 	case "failed":
 		if errorMsg != nil {
-			if contains(*errorMsg, "approving review is required") {
+			msg := *errorMsg
+			if contains(msg, "approving review is required") {
 				return "Needs approval"
 			}
-			if contains(*errorMsg, "status checks") {
+			if contains(msg, "status checks") {
+				// Extract details like "2 of 2 required status checks are expected/queued"
+				detail := extractStatusCheckDetail(msg)
+				if detail != "" {
+					return detail
+				}
 				return "Waiting for required status checks"
 			}
-			if contains(*errorMsg, "conflict") {
+			if contains(msg, "conflict") {
 				return "Has merge conflicts"
 			}
-			if contains(*errorMsg, "CI failed") {
+			if contains(msg, "CI failed") {
 				return "CI failed"
 			}
-			if contains(*errorMsg, "CI timeout") {
+			if contains(msg, "CI timeout") {
 				return "CI timed out"
+			}
+			if contains(msg, "workflows") && contains(msg, "permission") {
+				return "Needs workflows permission"
 			}
 		}
 		return "Failed"
