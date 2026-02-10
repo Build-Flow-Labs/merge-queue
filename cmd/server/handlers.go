@@ -42,6 +42,16 @@ func (h *Handlers) GitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		h.handlePullRequest(w, body)
 	case "issue_comment":
 		h.handleIssueComment(w, body)
+	case "check_run":
+		h.handleCheckRun(w, body)
+	case "check_suite":
+		h.handleCheckSuite(w, body)
+	case "status":
+		h.handleStatus(w, body)
+	case "workflow_run":
+		h.handleWorkflowRun(w, body)
+	case "workflow_job":
+		h.handleWorkflowJob(w, body)
 	case "ping":
 		writeJSON(w, http.StatusOK, map[string]string{"status": "pong"})
 	default:
@@ -170,6 +180,12 @@ func (h *Handlers) handlePullRequest(w http.ResponseWriter, body []byte) {
 		`, installID, owner, repo, evt.Number)
 	}
 
+	// Handle branch updates (synchronize) - wake processor to check CI
+	if evt.Action == "synchronize" {
+		log.Printf("PR #%d branch updated in %s/%s, waking processor", evt.Number, owner, repo)
+		h.processor.Wake(owner, repo)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -218,6 +234,159 @@ func (h *Handlers) handleIssueComment(w http.ResponseWriter, body []byte) {
 		// Need to get PR details from GitHub API
 		// For now, queue with minimal info (processor will fetch details)
 		h.addToQueue(installID, owner, repo, evt.Issue.Number, "", "", "", "", evt.Comment.User.Login)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// CI webhook event types
+
+type checkRunEvent struct {
+	Action   string `json:"action"`
+	CheckRun struct {
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
+	} `json:"check_run"`
+	Repository struct {
+		Name  string `json:"name"`
+		Owner struct{ Login string `json:"login"` } `json:"owner"`
+	} `json:"repository"`
+}
+
+type checkSuiteEvent struct {
+	Action     string `json:"action"`
+	CheckSuite struct {
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
+	} `json:"check_suite"`
+	Repository struct {
+		Name  string `json:"name"`
+		Owner struct{ Login string `json:"login"` } `json:"owner"`
+	} `json:"repository"`
+}
+
+type statusEvent struct {
+	State      string `json:"state"` // pending, success, failure, error
+	Repository struct {
+		Name  string `json:"name"`
+		Owner struct{ Login string `json:"login"` } `json:"owner"`
+	} `json:"repository"`
+}
+
+type workflowRunEvent struct {
+	Action      string `json:"action"`
+	WorkflowRun struct {
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
+	} `json:"workflow_run"`
+	Repository struct {
+		Name  string `json:"name"`
+		Owner struct{ Login string `json:"login"` } `json:"owner"`
+	} `json:"repository"`
+}
+
+type workflowJobEvent struct {
+	Action      string `json:"action"`
+	WorkflowJob struct {
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
+	} `json:"workflow_job"`
+	Repository struct {
+		Name  string `json:"name"`
+		Owner struct{ Login string `json:"login"` } `json:"owner"`
+	} `json:"repository"`
+}
+
+func (h *Handlers) handleCheckRun(w http.ResponseWriter, body []byte) {
+	var evt checkRunEvent
+	if err := json.Unmarshal(body, &evt); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	owner := evt.Repository.Owner.Login
+	repo := evt.Repository.Name
+
+	// Only react to completed check runs
+	if evt.CheckRun.Status == "completed" {
+		log.Printf("check_run completed for %s/%s (conclusion: %s)", owner, repo, evt.CheckRun.Conclusion)
+		h.processor.Wake(owner, repo)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handlers) handleCheckSuite(w http.ResponseWriter, body []byte) {
+	var evt checkSuiteEvent
+	if err := json.Unmarshal(body, &evt); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	owner := evt.Repository.Owner.Login
+	repo := evt.Repository.Name
+
+	// Only react to completed check suites
+	if evt.CheckSuite.Status == "completed" {
+		log.Printf("check_suite completed for %s/%s (conclusion: %s)", owner, repo, evt.CheckSuite.Conclusion)
+		h.processor.Wake(owner, repo)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handlers) handleStatus(w http.ResponseWriter, body []byte) {
+	var evt statusEvent
+	if err := json.Unmarshal(body, &evt); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	owner := evt.Repository.Owner.Login
+	repo := evt.Repository.Name
+
+	// Only react to terminal states (not pending)
+	if evt.State == "success" || evt.State == "failure" || evt.State == "error" {
+		log.Printf("commit status %s for %s/%s", evt.State, owner, repo)
+		h.processor.Wake(owner, repo)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handlers) handleWorkflowRun(w http.ResponseWriter, body []byte) {
+	var evt workflowRunEvent
+	if err := json.Unmarshal(body, &evt); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	owner := evt.Repository.Owner.Login
+	repo := evt.Repository.Name
+
+	// Only react to completed workflow runs
+	if evt.WorkflowRun.Status == "completed" {
+		log.Printf("workflow_run completed for %s/%s (conclusion: %s)", owner, repo, evt.WorkflowRun.Conclusion)
+		h.processor.Wake(owner, repo)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handlers) handleWorkflowJob(w http.ResponseWriter, body []byte) {
+	var evt workflowJobEvent
+	if err := json.Unmarshal(body, &evt); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	owner := evt.Repository.Owner.Login
+	repo := evt.Repository.Name
+
+	// Only react to completed jobs
+	if evt.WorkflowJob.Status == "completed" {
+		log.Printf("workflow_job completed for %s/%s (conclusion: %s)", owner, repo, evt.WorkflowJob.Conclusion)
+		h.processor.Wake(owner, repo)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

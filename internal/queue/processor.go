@@ -54,6 +54,12 @@ type Settings struct {
 	TriggerComment      string `json:"trigger_comment"`
 }
 
+// WakeSignal is sent to wake up the processor for a specific repo
+type WakeSignal struct {
+	Owner string
+	Repo  string
+}
+
 // Processor handles background processing of the merge queue
 type Processor struct {
 	db         *sql.DB
@@ -61,6 +67,7 @@ type Processor struct {
 	mu         sync.Mutex
 	processing map[string]bool // owner/repo -> is processing
 	stopChan   chan struct{}
+	wakeChan   chan WakeSignal // channel for webhook-triggered wakeups
 	wg         sync.WaitGroup
 }
 
@@ -71,6 +78,7 @@ func NewProcessor(db *sql.DB, ghConfig *github.AppConfig) *Processor {
 		ghConfig:   ghConfig,
 		processing: make(map[string]bool),
 		stopChan:   make(chan struct{}),
+		wakeChan:   make(chan WakeSignal, 100), // buffered to prevent blocking webhooks
 	}
 }
 
@@ -88,6 +96,9 @@ func (p *Processor) Start() {
 				return
 			case <-ticker.C:
 				p.processQueues()
+			case signal := <-p.wakeChan:
+				log.Printf("merge queue: wake signal received for %s/%s", signal.Owner, signal.Repo)
+				p.processRepoIfReady(signal.Owner, signal.Repo)
 			}
 		}
 	}()
@@ -99,6 +110,54 @@ func (p *Processor) Stop() {
 	close(p.stopChan)
 	p.wg.Wait()
 	log.Println("Merge queue processor stopped")
+}
+
+// Wake sends a signal to immediately process a specific repo's queue.
+// Called by webhook handlers when CI events complete.
+func (p *Processor) Wake(owner, repo string) {
+	select {
+	case p.wakeChan <- WakeSignal{Owner: owner, Repo: repo}:
+		log.Printf("merge queue: wake signal sent for %s/%s", owner, repo)
+	default:
+		// Channel full, processor will pick it up on next tick
+		log.Printf("merge queue: wake channel full, skipping signal for %s/%s", owner, repo)
+	}
+}
+
+// processRepoIfReady processes a specific repo's queue if not already processing
+func (p *Processor) processRepoIfReady(owner, repo string) {
+	// Find installation ID for this repo
+	var installID string
+	err := p.db.QueryRow(`
+		SELECT DISTINCT installation_id
+		FROM merge_queue
+		WHERE owner = $1 AND repo = $2
+		  AND status IN ('queued', 'processing', 'rebasing', 'waiting_ci', 'merging')
+		LIMIT 1
+	`, owner, repo).Scan(&installID)
+	if err != nil {
+		// No active items for this repo
+		return
+	}
+
+	key := fmt.Sprintf("%s/%s", owner, repo)
+	p.mu.Lock()
+	if p.processing[key] {
+		p.mu.Unlock()
+		log.Printf("merge queue: %s already processing, skipping wake", key)
+		return
+	}
+	p.processing[key] = true
+	p.mu.Unlock()
+
+	go func() {
+		defer func() {
+			p.mu.Lock()
+			delete(p.processing, key)
+			p.mu.Unlock()
+		}()
+		p.processQueue(installID, owner, repo)
+	}()
 }
 
 // processQueues finds all active queues and processes them
