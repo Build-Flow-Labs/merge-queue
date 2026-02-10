@@ -425,9 +425,11 @@ const dashboardHTML = `<!DOCTYPE html>
 
         // Fix Safari date parsing (can't handle microseconds)
         function parseDate(dateStr) {
-            if (!dateStr) return null;
+            if (!dateStr) return new Date();
             // Truncate microseconds to milliseconds for Safari compatibility
-            return new Date(dateStr.replace(/\.(\d{3})\d*Z$/, '.$1Z'));
+            const fixed = dateStr.replace(/\.(\d{3})\d*Z$/, '.$1Z');
+            const d = new Date(fixed);
+            return isNaN(d.getTime()) ? new Date() : d;
         }
 
         function formatError(msg) {
