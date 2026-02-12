@@ -487,19 +487,38 @@ func (h *Handlers) GetQueue(w http.ResponseWriter, r *http.Request) {
 	owner := r.URL.Query().Get("owner")
 	repo := r.URL.Query().Get("repo")
 
-	if owner == "" || repo == "" {
-		http.Error(w, "owner and repo parameters required", http.StatusBadRequest)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+
+	if owner == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "owner parameter required"})
 		return
 	}
 
-	rows, err := h.db.Query(`
-		SELECT id, installation_id, owner, repo, pr_number, pr_title, pr_branch, base_branch, pr_author, position, status, error_message, queued_at, started_at, completed_at, retry_count, max_retries, next_retry_at
-		FROM merge_queue
-		WHERE owner = $1 AND repo = $2 AND status NOT IN ('merged', 'cancelled')
-		ORDER BY position ASC
-	`, owner, repo)
+	var rows *sql.Rows
+	var err error
+
+	if repo == "" {
+		// Query all repos for this owner
+		rows, err = h.db.Query(`
+			SELECT id, installation_id, owner, repo, pr_number, pr_title, pr_branch, base_branch, pr_author, position, status, error_message, queued_at, started_at, completed_at, retry_count, max_retries, next_retry_at
+			FROM merge_queue
+			WHERE owner = $1 AND status NOT IN ('merged', 'cancelled')
+			ORDER BY repo ASC, position ASC
+		`, owner)
+	} else {
+		// Query specific repo
+		rows, err = h.db.Query(`
+			SELECT id, installation_id, owner, repo, pr_number, pr_title, pr_branch, base_branch, pr_author, position, status, error_message, queued_at, started_at, completed_at, retry_count, max_retries, next_retry_at
+			FROM merge_queue
+			WHERE owner = $1 AND repo = $2 AND status NOT IN ('merged', 'cancelled')
+			ORDER BY position ASC
+		`, owner, repo)
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	defer rows.Close()
@@ -585,22 +604,40 @@ func (h *Handlers) RemoveFromQueue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) RetryQueueItem(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
 	itemID := r.PathValue("id")
 	if itemID == "" {
-		http.Error(w, "id required", http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "id required"})
 		return
 	}
 
-	_, err := h.db.Exec(`
+	result, err := h.db.Exec(`
 		UPDATE merge_queue SET status = 'queued', error_message = NULL, started_at = NULL, completed_at = NULL, retry_count = 0, next_retry_at = NULL
 		WHERE id = $1 AND status IN ('failed', 'paused')
 	`, itemID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "queued"})
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "item not found or not in failed/paused status"})
+		return
+	}
+
+	// Wake the processor to pick up the item immediately
+	var owner, repo string
+	h.db.QueryRow(`SELECT owner, repo FROM merge_queue WHERE id = $1`, itemID).Scan(&owner, &repo)
+	if owner != "" && repo != "" {
+		h.processor.Wake(owner, repo)
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "queued"})
 }
 
 // PauseQueueItem pauses a queue item
@@ -673,6 +710,9 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) GetEvents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+
 	owner := r.URL.Query().Get("owner")
 	repo := r.URL.Query().Get("repo")
 
@@ -689,7 +729,8 @@ func (h *Handlers) GetEvents(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	defer rows.Close()
@@ -739,9 +780,13 @@ func (h *Handlers) GetEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) ListInstallations(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+
 	rows, err := h.db.Query(`SELECT id, github_installation_id, owner_type, owner_login, created_at FROM installations ORDER BY created_at DESC`)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	defer rows.Close()
@@ -776,12 +821,16 @@ func (h *Handlers) ListInstallations(w http.ResponseWriter, r *http.Request) {
 
 // GetCIStatus returns detailed CI status for a PR including runner information
 func (h *Handlers) GetCIStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+
 	owner := r.URL.Query().Get("owner")
 	repo := r.URL.Query().Get("repo")
 	ref := r.URL.Query().Get("ref")
 
 	if owner == "" || repo == "" || ref == "" {
-		http.Error(w, "owner, repo, and ref parameters required", http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "owner, repo, and ref parameters required"})
 		return
 	}
 
@@ -789,25 +838,27 @@ func (h *Handlers) GetCIStatus(w http.ResponseWriter, r *http.Request) {
 	var ghInstallID int64
 	err := h.db.QueryRow(`SELECT github_installation_id FROM installations WHERE owner_login = $1`, owner).Scan(&ghInstallID)
 	if err != nil {
-		http.Error(w, "installation not found", http.StatusNotFound)
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "installation not found"})
 		return
 	}
 
 	// Create GitHub client
 	ghClient, err := github.NewInstallationClient(h.ghConfig, ghInstallID)
 	if err != nil {
-		http.Error(w, "failed to create GitHub client", http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to create GitHub client"})
 		return
 	}
 
 	// Get CI status
 	ciStatus, err := github.GetCIStatus(r.Context(), ghClient, owner, repo, ref)
 	if err != nil {
-		http.Error(w, "failed to get CI status: "+err.Error(), http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to get CI status: " + err.Error()})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ciStatus)
 }
 
@@ -1005,9 +1056,13 @@ func (h *Handlers) ListWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 
 // ListRepos lists repositories for an organization from GitHub
 func (h *Handlers) ListRepos(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+
 	owner := r.URL.Query().Get("owner")
 	if owner == "" {
-		http.Error(w, "owner parameter required", http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "owner parameter required"})
 		return
 	}
 
@@ -1015,14 +1070,16 @@ func (h *Handlers) ListRepos(w http.ResponseWriter, r *http.Request) {
 	var ghInstallID int64
 	err := h.db.QueryRow(`SELECT github_installation_id FROM installations WHERE owner_login = $1`, owner).Scan(&ghInstallID)
 	if err != nil {
-		http.Error(w, "installation not found", http.StatusNotFound)
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "installation not found"})
 		return
 	}
 
 	// Create GitHub client
 	ghClient, err := github.NewInstallationClient(h.ghConfig, ghInstallID)
 	if err != nil {
-		http.Error(w, "failed to create GitHub client", http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to create GitHub client"})
 		return
 	}
 
@@ -1033,7 +1090,8 @@ func (h *Handlers) ListRepos(w http.ResponseWriter, r *http.Request) {
 	for {
 		repos, resp, err := ghClient.Apps.ListRepos(r.Context(), opts)
 		if err != nil {
-			http.Error(w, "failed to list repos: "+err.Error(), http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "failed to list repos: " + err.Error()})
 			return
 		}
 

@@ -226,7 +226,7 @@ func (p *Processor) processRepoIfReady(owner, repo string) {
 		SELECT DISTINCT installation_id
 		FROM merge_queue
 		WHERE owner = $1 AND repo = $2
-		  AND status IN ('queued', 'processing', 'rebasing', 'waiting_ci', 'merging')
+		  AND status IN ('queued', 'processing', 'rebasing', 'waiting_ci', 'merging', 'approving', 'resolving_conflicts')
 		LIMIT 1
 	`, owner, repo).Scan(&installID)
 	if err != nil {
@@ -262,7 +262,7 @@ func (p *Processor) processQueues() {
 	rows, err := p.db.Query(`
 		SELECT DISTINCT installation_id, owner, repo
 		FROM merge_queue
-		WHERE status IN ('queued', 'processing', 'rebasing', 'waiting_ci', 'merging')
+		WHERE status IN ('queued', 'processing', 'rebasing', 'waiting_ci', 'merging', 'approving', 'resolving_conflicts')
 	`)
 	if err != nil {
 		log.Printf("merge queue: failed to find active queues: %v", err)
@@ -307,7 +307,7 @@ func (p *Processor) processQueue(installID, owner, repo string) {
 		SELECT id, installation_id, owner, repo, pr_number, pr_title, pr_branch, base_branch, pr_author, position, status, queued_at
 		FROM merge_queue
 		WHERE installation_id = $1 AND owner = $2 AND repo = $3
-		  AND status IN ('queued', 'processing', 'rebasing', 'resolving_conflicts', 'waiting_ci', 'merging')
+		  AND status IN ('queued', 'processing', 'rebasing', 'resolving_conflicts', 'waiting_ci', 'merging', 'approving')
 		ORDER BY
 			CASE WHEN status = 'queued' THEN 1 ELSE 0 END,
 			position ASC
@@ -732,13 +732,13 @@ func (p *Processor) logEvent(itemID, installID, owner, repo string, prNumber int
 
 // resetStuckItems resets items that have been stuck in intermediate states for too long
 func (p *Processor) resetStuckItems(installID, owner, repo string) {
-	// Reset items stuck in intermediate states for more than 10 minutes
+	// Reset items stuck in intermediate states for more than 5 minutes
 	result, err := p.db.Exec(`
 		UPDATE merge_queue
 		SET status = 'queued', started_at = NULL, error_message = NULL
 		WHERE installation_id = $1 AND owner = $2 AND repo = $3
-		  AND status IN ('processing', 'rebasing', 'resolving_conflicts')
-		  AND started_at < NOW() - INTERVAL '10 minutes'
+		  AND status IN ('processing', 'rebasing', 'resolving_conflicts', 'approving', 'waiting_ci')
+		  AND started_at < NOW() - INTERVAL '5 minutes'
 	`, installID, owner, repo)
 	if err != nil {
 		log.Printf("merge queue: failed to reset stuck items: %v", err)

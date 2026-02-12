@@ -41,8 +41,9 @@ func main() {
 	defer db.Close()
 
 	db.SetMaxOpenConns(envInt("DB_MAX_OPEN_CONNS", 10))
-	db.SetMaxIdleConns(envInt("DB_MAX_IDLE_CONNS", 5))
-	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetMaxIdleConns(envInt("DB_MAX_IDLE_CONNS", 2))
+	db.SetConnMaxLifetime(1 * time.Minute)
+	db.SetConnMaxIdleTime(30 * time.Second)
 
 	if err := db.Ping(); err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
@@ -181,9 +182,10 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Cache-Control")
+		w.Header().Set("Access-Control-Max-Age", "86400")
 		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		next.ServeHTTP(w, r)
